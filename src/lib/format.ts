@@ -21,3 +21,15 @@ export function formatLocal(isoLocal: string): string {
   const [date, time] = isoLocal.split("T");
   return time ? `${formatDate(date)} · ${time.slice(0, 5)}` : formatDate(date);
 }
+
+/** Display timezone for timestamps (price checks, alerts). Set APP_TIMEZONE to override. */
+const displayTimeZone = () => process.env.APP_TIMEZONE || "America/Los_Angeles";
+
+/** SQLite "YYYY-MM-DD HH:MM:SS" (UTC) → "9/29/2026, 9:07 PM" in the display timezone. */
+export function formatTimestamp(sqlUtc: string, dateOnly = false): string {
+  const d = new Date(`${sqlUtc.replace(" ", "T")}Z`);
+  const opts: Intl.DateTimeFormatOptions = { timeZone: displayTimeZone() };
+  return dateOnly
+    ? d.toLocaleDateString("en-US", opts)
+    : d.toLocaleString("en-US", { ...opts, dateStyle: "short", timeStyle: "short" });
+}

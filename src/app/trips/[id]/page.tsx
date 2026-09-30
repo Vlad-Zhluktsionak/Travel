@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { hotelAdvice, rebookAdvice } from "@/lib/advice";
-import { formatDate, formatLocal, formatMoney } from "@/lib/format";
+import { formatDate, formatLocal, formatMoney, formatTimestamp } from "@/lib/format";
 import { describeTrip } from "@/lib/monitor";
 import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
@@ -11,7 +11,6 @@ import { checkNow, removeBooking, setTracking } from "../../actions";
 
 export const dynamic = "force-dynamic";
 
-const utc = (sqlTime: string) => new Date(`${sqlTime.replace(" ", "T")}Z`);
 
 export default async function TripPage({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
@@ -72,7 +71,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         <div className="row" style={{ marginTop: 12, justifyContent: "space-between" }}>
           <span className="muted small">
             {lastCheck
-              ? `Last checked ${utc(lastCheck.checkedAt).toLocaleString()} via ${lastCheck.provider}${lastCheck.note ? ` — ${lastCheck.note}` : ""}`
+              ? `Last checked ${formatTimestamp(lastCheck.checkedAt)} via ${lastCheck.provider}${lastCheck.note ? ` — ${lastCheck.note}` : ""}`
               : "Not checked yet"}
           </span>
           <div className="row">
@@ -98,7 +97,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
           <ul>
             {alerts.map((a) => (
               <li key={a.id}>
-                {utc(a.createdAt).toLocaleString()}: {formatMoney(a.foundCents, a.currency)} (save{" "}
+                {formatTimestamp(a.createdAt)}: {formatMoney(a.foundCents, a.currency)} (save{" "}
                 {formatMoney(a.paidCents - a.foundCents, a.currency)})
               </li>
             ))}
@@ -200,11 +199,11 @@ function PriceChart({ checks, paidCents, currency }: { checks: PriceCheck[]; pai
       <path className="line" d={path} />
       {points.map((p, i) => (
         <circle key={p.id} className="dot" cx={x(i)} cy={y(p.priceCents!)} r={3}>
-          <title>{`${utc(p.checkedAt).toLocaleString()}: ${formatMoney(p.priceCents!, currency)}`}</title>
+          <title>{`${formatTimestamp(p.checkedAt)}: ${formatMoney(p.priceCents!, currency)}`}</title>
         </circle>
       ))}
-      <text x={PAD_L} y={H - 6}>{utc(points[0].checkedAt).toLocaleDateString()}</text>
-      <text x={W - PAD_R} y={H - 6} textAnchor="end">{utc(points[points.length - 1].checkedAt).toLocaleDateString()}</text>
+      <text x={PAD_L} y={H - 6}>{formatTimestamp(points[0].checkedAt, true)}</text>
+      <text x={W - PAD_R} y={H - 6} textAnchor="end">{formatTimestamp(points[points.length - 1].checkedAt, true)}</text>
     </svg>
   );
 }
