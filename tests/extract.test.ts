@@ -5,6 +5,7 @@ import { extractBooking, toParsedBooking, type Extraction } from "../src/lib/ext
 const flightExtraction: Extraction = {
   booking_type: "flight",
   confirmation_code: "xyz789",
+  paid_with_points: false,
   total_paid: 412.6,
   currency: "usd",
   hotel: null,
@@ -33,6 +34,7 @@ const flightExtraction: Extraction = {
 const hotelExtraction: Extraction = {
   booking_type: "hotel",
   confirmation_code: "91234567",
+  paid_with_points: false,
   total_paid: 689.4,
   currency: "USD",
   flight: null,
@@ -91,6 +93,12 @@ describe("toParsedBooking", () => {
     const result = toParsedBooking(viaExpedia);
     expect(result.booking).toBeNull();
     expect(result.reason).toContain("Expedia");
+  });
+
+  it("rejects bookings paid with points (e.g. a Bonvoy award stay with cash taxes)", () => {
+    const result = toParsedBooking({ ...hotelExtraction, paid_with_points: true, total_paid: 5, currency: "EUR" });
+    expect(result.booking).toBeNull();
+    expect(result.reason).toMatch(/points/);
   });
 
   it("rejects hotel stays with unreadable dates", () => {

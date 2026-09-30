@@ -48,6 +48,9 @@ export const ExtractionSchema = z.object({
     .enum(["flight", "hotel", "none"])
     .describe("'flight' or 'hotel' only if this email confirms a purchased booking; 'none' for promos, reminders without the itinerary, receipts for other things, etc."),
   confirmation_code: z.string().nullable().describe("Airline record locator / PNR, or hotel confirmation number"),
+  paid_with_points: z
+    .boolean()
+    .describe("True if the booking was paid fully or partly with points, miles, a free-night award or certificate (e.g. 'Total Points Redeemed', award ticket), even if taxes were paid in cash"),
   total_paid: z
     .number()
     .nullable()
@@ -118,6 +121,9 @@ const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 export function toParsedBooking(x: Extraction): ExtractResult {
   if (x.booking_type === "none") return { booking: null, reason: "This doesn't look like a flight or hotel booking confirmation." };
   if (!x.confirmation_code) return { booking: null, reason: "No confirmation number found." };
+  if (x.paid_with_points) {
+    return { booking: null, reason: "Bookings paid with points, miles or award certificates aren't tracked — there's no cash price to compare." };
+  }
   if (x.total_paid === null || !x.currency) {
     return { booking: null, reason: "Couldn't find the price you paid, so there's nothing to compare against." };
   }
