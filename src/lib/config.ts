@@ -1,6 +1,9 @@
 export const config = {
   get appUrl() {
-    return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    let url = (process.env.APP_URL ?? "http://localhost:3000").trim().replace(/\/+$/, "");
+    // Tolerate "my-app.vercel.app" without a scheme: redirects and email links need an absolute URL.
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    return url;
   },
   get sessionSecret() {
     const secret = process.env.SESSION_SECRET;
