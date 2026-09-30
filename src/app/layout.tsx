@@ -5,8 +5,9 @@ import { currentUser } from "@/lib/session";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FareWatch — get paid back when your flight gets cheaper",
-  description: "Forward your flight confirmation and we'll watch the price and tell you when it drops.",
+  title: "FareWatch",
+  description: "Watches the price of your booked flights and hotels and tells you when it drops.",
+  appleWebApp: { capable: true, title: "FareWatch", statusBarStyle: "default" },
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

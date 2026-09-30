@@ -60,8 +60,8 @@ describe("Duffel matching", () => {
       offer("700.00", { date: "2030-03-11T07:00" }), // different day
       offer("760.50"),
     ];
-    expect(cheapestMatchingOffer(offers, roundTrip)?.total_amount).toBe("760.50");
-    expect(cheapestMatchingOffer(offers, { ...roundTrip, fareBrand: "Basic Economy" })?.total_amount).toBe("650.00");
+    expect(cheapestMatchingOffer(offers, roundTrip.details)?.total_amount).toBe("760.50");
+    expect(cheapestMatchingOffer(offers, { ...roundTrip.details, fareBrand: "Basic Economy" })?.total_amount).toBe("650.00");
   });
 
   it("builds the offer request from the itinerary", async () => {
@@ -70,7 +70,7 @@ describe("Duffel matching", () => {
       body = JSON.parse(String(init.body));
       return new Response(JSON.stringify({ data: { offers: [offer("760.50")] } }), { status: 200 });
     }) as unknown as typeof fetch;
-    const quote = await new DuffelPriceProvider("tok", fetchImpl).quote(roundTrip);
+    const quote = await new DuffelPriceProvider("tok", fetchImpl).quote(roundTrip.details);
     expect(quote).toMatchObject({ priceCents: 76_050, currency: "USD" });
     expect(body.data.slices).toEqual([
       { origin: "SFO", destination: "BOS", departure_date: "2030-03-10" },

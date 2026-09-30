@@ -21,23 +21,58 @@ export interface Itinerary {
   fareBrand: string | null;
 }
 
-export interface ParsedBooking extends Itinerary {
-  confirmationCode: string;
+export interface FlightDetails extends Itinerary {
   airline: string | null;
   bookingSite: string | null;
   passengerNames: string[];
-  /** Total paid for all passengers, in minor units (cents). */
+}
+
+export type HotelChain = "marriott" | "hilton" | "hyatt" | "ihg" | "other";
+
+export interface HotelDetails {
+  hotelName: string;
+  chain: HotelChain;
+  city: string | null;
+  address: string | null;
+  /** "YYYY-MM-DD" */
+  checkIn: string;
+  /** "YYYY-MM-DD" */
+  checkOut: string;
+  adults: number;
+  rooms: number;
+  roomType: string | null;
+  rateName: string | null;
+  /** null when the email doesn't say. */
+  refundable: boolean | null;
+  /** Last date the reservation can be cancelled free of charge, "YYYY-MM-DD". */
+  cancelBy: string | null;
+  /** Google Hotels id for the property, cached after the first lookup. */
+  propertyToken?: string | null;
+}
+
+interface ParsedBase {
+  confirmationCode: string;
+  /** Total paid, in minor units (cents). Flights: all passengers. Hotels: whole stay incl. taxes. */
   paidCents: number;
   currency: string;
 }
 
-export interface Booking extends ParsedBooking {
+export type ParsedFlight = ParsedBase & { kind: "flight"; details: FlightDetails };
+export type ParsedHotel = ParsedBase & { kind: "hotel"; details: HotelDetails };
+export type ParsedBooking = ParsedFlight | ParsedHotel;
+
+interface Stored {
   id: number;
   userId: number;
   source: string;
   status: "active" | "paused" | "departed";
   createdAt: string;
+  lastCheckedAt: string | null;
 }
+
+export type FlightBooking = ParsedFlight & Stored;
+export type HotelBooking = ParsedHotel & Stored;
+export type Booking = FlightBooking | HotelBooking;
 
 export interface PriceCheck {
   id: number;

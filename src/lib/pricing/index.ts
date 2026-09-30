@@ -1,15 +1,20 @@
 import { config } from "../config";
 import { DuffelPriceProvider } from "./duffel";
 import { MockPriceProvider } from "./mock";
-import type { PriceProvider } from "./provider";
+import type { FlightPriceProvider, HotelPriceProvider } from "./provider";
+import { SerpApiHotelProvider } from "./serpapi-hotels";
 
-export type { PriceProvider, PriceQuote } from "./provider";
+export type { FlightPriceProvider, HotelPriceProvider, HotelQuote, PriceQuote } from "./provider";
 
-export function getPriceProvider(): PriceProvider {
-  if (config.priceProvider === "duffel") {
-    const token = process.env.DUFFEL_ACCESS_TOKEN;
-    if (!token) throw new Error("PRICE_PROVIDER=duffel requires DUFFEL_ACCESS_TOKEN");
-    return new DuffelPriceProvider(token);
-  }
-  return new MockPriceProvider();
+export interface Providers {
+  flight: FlightPriceProvider;
+  hotel: HotelPriceProvider;
+}
+
+export function getProviders(): Providers {
+  const mock = new MockPriceProvider();
+  const flight =
+    config.flightPriceProvider === "duffel" ? new DuffelPriceProvider(process.env.DUFFEL_ACCESS_TOKEN ?? "") : mock;
+  const hotel = config.hotelPriceProvider === "serpapi" ? new SerpApiHotelProvider(process.env.SERPAPI_API_KEY!) : mock;
+  return { flight, hotel };
 }

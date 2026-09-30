@@ -1,0 +1,28 @@
+# Free scheduler: Vercel's Hobby plan only runs cron jobs once a day, so GitHub Actions calls the
+# price-check endpoint instead. Add two repository secrets (Settings → Secrets and variables → Actions):
+#   APP_URL      e.g. https://your-app.vercel.app
+#   CRON_SECRET  same value as CRON_SECRET in the app's environment variables
+# Each trip is only re-priced every PRICE_CHECK_INTERVAL_HOURS (default 12), whatever this schedule is.
+name: Check prices
+
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    if: ${{ vars.PRICE_CHECKS_ENABLED != 'false' }}
+    steps:
+      - name: Call the price-check endpoint
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL / CRON_SECRET secrets not set yet; skipping."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 300 \
+            -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/check-prices"

@@ -1,5 +1,5 @@
 import type { Itinerary } from "../types";
-import type { PriceProvider, PriceQuote } from "./provider";
+import type { FlightPriceProvider, PriceQuote } from "./provider";
 
 interface DuffelSegment {
   origin: { iata_code: string };
@@ -53,7 +53,7 @@ export function cheapestMatchingOffer(offers: DuffelOffer[], itinerary: Itinerar
 }
 
 /** Live fares from the Duffel Flights API (https://duffel.com/docs/api/offer-requests). */
-export class DuffelPriceProvider implements PriceProvider {
+export class DuffelPriceProvider implements FlightPriceProvider {
   readonly name = "duffel";
 
   constructor(

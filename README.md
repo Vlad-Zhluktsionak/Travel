@@ -1,72 +1,71 @@
-# ✈️ FareWatch
+# ✈️🏨 FareWatch
 
-Get money back when your flight gets cheaper. Forward a flight confirmation email (or connect Gmail/Outlook), and FareWatch:
+Get money back when your flight or hotel gets cheaper. FareWatch:
 
-1. **Reads the itinerary with AI.** Claude extracts the confirmation code, exact flight numbers, dates, cabin, fare brand, passenger count and the price you paid — from any airline or travel-site email.
-2. **Re-prices the exact same flights** several times a day (same flights, same cabin, same party size; basic-economy fares are excluded unless you booked one).
-3. **Emails you when the price drops** below what you paid by more than your threshold, with airline-specific advice on how to claim the difference (for example, rebook for a travel credit).
+1. **Picks up your confirmation emails** automatically from Gmail (via a small Apps Script), or you paste one in.
+2. **Reads them with AI.** Claude extracts flight numbers, dates, cabin and fare type, or the hotel, dates, room, rate, cancellation terms, plus the price you paid.
+3. **Re-checks the price** of the exact same flights, or of the same hotel stay **on the hotel's official website** (Marriott, Hilton, Hyatt, IHG, ...). Hotel stays booked through Expedia, Booking.com or other aggregators are not tracked.
+4. **Emails you when the price drops** by more than your threshold, with how to claim the difference. Non-refundable hotel rates are still reported, but flagged "can't rebook".
 
 ## How it works
 
 ```
- Forwarded email ─┐                                          ┌─> price_checks (history chart)
- Gmail / Outlook ─┼─> normalize ─> Claude extraction ─> bookings ─> monitor (cron) ─┤
- Pasted email ────┘   (HTML→text)   (structured output)          │ PriceProvider   └─> alerts ─> email
-                                                                 └ Duffel | mock
+ Gmail (Apps Script) ─┐                                             ┌─> price history chart
+ Pasted email ────────┼─> Claude extraction ─> bookings ─> monitor ─┤
+ Forwarding / OAuth ──┘   (flight | hotel)       (Turso)    │       └─> alert email (Resend)
+                                                            ├ flights: Duffel
+                                                            └ hotels:  SerpApi Google Hotels (official site only)
+        GitHub Actions (every 6 h) ──> /api/cron/check-prices
 ```
 
 | Piece | Where |
 | --- | --- |
-| AI itinerary extraction (Claude, structured outputs + validation) | `src/lib/extract.ts` |
-| Inbound-email webhook (Postmark, SendGrid, Mailgun) | `src/app/api/inbound-email/route.ts` |
-| Gmail / Outlook OAuth + mailbox scan | `src/lib/email/mailbox.ts`, `src/lib/email/sync.ts`, `src/app/api/connect/…` |
-| Price providers (Duffel live fares, simulated demo) | `src/lib/pricing/` |
-| Price monitor + alert rules | `src/lib/monitor.ts` |
-| Rebooking advice per airline | `src/lib/airlines.ts` |
-| Scheduled job (Vercel Cron or `npm run monitor`) | `src/app/api/cron/check-prices/route.ts`, `vercel.json` |
-| Database (SQLite via Node's built-in `node:sqlite`) | `src/lib/db.ts`, `src/lib/repo.ts` |
-| Web UI (Next.js App Router) | `src/app/` |
+| AI extraction (Claude structured outputs + validation) | `src/lib/extract.ts` |
+| Gmail auto-import script | `scripts/gmail-apps-script.gs` |
+| Inbound webhook (Apps Script, Postmark, SendGrid, Mailgun) | `src/app/api/inbound-email/route.ts` |
+| Hotel prices, official site only | `src/lib/pricing/serpapi-hotels.ts` |
+| Flight prices | `src/lib/pricing/duffel.ts` |
+| Monitor, alert rules and emails | `src/lib/monitor.ts`, `src/lib/advice.ts` |
+| Scheduler | `.github/workflows/check-prices.yml` |
+| Database (Turso / local SQLite via libSQL) | `src/lib/db.ts`, `src/lib/repo.ts` |
+| Web UI (Next.js) | `src/app/` |
 
-**Alert rules:** alert when `paid − current ≥ your threshold` (default $20). After an alert, only alert again if the price falls at least another $5. Quotes in a different currency are recorded but never compared. Trips stop being checked after the first flight's departure date.
+**Alert rules:** you get an alert when `paid − current ≥ your threshold` (default $20). After an alert, you only get another one if the price falls at least $5 further. Prices in a different currency are recorded but never compared. Tracking stops on the departure or check-in date. Scheduled checks re-price each trip at most every `PRICE_CHECK_INTERVAL_HOURS` (default 12). The "Check price now" button ignores that limit.
 
 ## Run it locally
 
-Requires Node.js 22.13+.
+Requires Node.js 22+.
 
 ```bash
 npm install
-cp .env.example .env.local   # then set ANTHROPIC_API_KEY
+cp .env.example .env.local   # set ANTHROPIC_API_KEY; the rest is optional locally
 npm run dev                  # http://localhost:3000
 ```
 
-Without other keys the app runs in **demo mode**: sign-in links are shown on the page instead of emailed, emails are logged to the console, and prices are simulated. Paste a confirmation email into the dashboard to try it end to end, then use **Check price now** on the trip page.
+With no other keys set, prices are simulated, the sign-in link appears on the page, and emails are printed to the terminal.
 
 ```bash
-npm test       # unit tests (no network or API key needed)
-npm run lint   # type-check
-npm run monitor   # run the mailbox sync + price check job once
+npm test          # unit tests (no network or API keys needed)
+npm run lint      # type-check
+npm run monitor   # run the scheduled job once
 ```
 
-## Going to production
+## Free personal setup (≈30 minutes)
 
-| Feature | What to set up |
-| --- | --- |
-| AI parsing | `ANTHROPIC_API_KEY` |
-| Live fares | A [Duffel](https://duffel.com) account → `DUFFEL_ACCESS_TOKEN` |
-| Outgoing email | A [Resend](https://resend.com) account with a verified domain → `RESEND_API_KEY`, `EMAIL_FROM` |
-| Forwarding address | An inbound-email service (Postmark Inbound, SendGrid Inbound Parse, or Mailgun Routes) for `INBOUND_DOMAIN`, posting to `https://<app>/api/inbound-email?secret=<INBOUND_SECRET>` |
-| Gmail | A Google Cloud OAuth client with the `gmail.readonly` scope and redirect URI `https://<app>/api/connect/gmail/callback`. Restricted scope: Google requires app verification (and a security assessment) before public launch. |
-| Outlook | A Microsoft Entra app registration with `Mail.Read`, `User.Read`, `offline_access`, and redirect URI `https://<app>/api/connect/outlook/callback` |
-| Scheduling | `CRON_SECRET` + `vercel.json` (every 6 hours), or call `npm run monitor` from any scheduler |
-| Sessions | A long random `SESSION_SECRET`, and `APP_URL` set to your public https URL |
+Everything below has a free tier. The only paid piece is the Claude API, where reading each confirmation email costs a few cents.
 
-**Database note:** SQLite is fine on a single server or VM with a persistent disk. For serverless hosting (e.g. Vercel), move `src/lib/db.ts` / `src/lib/repo.ts` to a hosted Postgres; all SQL lives in `repo.ts`.
+1. **Claude API key.** Create one at [console.anthropic.com](https://console.anthropic.com) and add a few dollars of credit → `ANTHROPIC_API_KEY`.
+2. **Database: [Turso](https://turso.tech).** Create a database, then copy its URL (`libsql://…`) → `DATABASE_URL` and an auth token → `DATABASE_AUTH_TOKEN`.
+3. **Hotel prices: [SerpApi](https://serpapi.com).** Copy your API key → `SERPAPI_API_KEY`. The free plan has a small monthly search quota (check their pricing page). Each hotel check uses 1 search, plus 1 extra the first time to find the hotel. At the default 12-hour interval, one tracked hotel uses about 60 searches a month; raise `PRICE_CHECK_INTERVAL_HOURS` if you track several.
+4. **Flight prices: [Duffel](https://duffel.com)** (optional). Copy an access token → `DUFFEL_ACCESS_TOKEN`. Test-mode tokens only return fake airlines, so real prices need a live-mode token. Without one, flight prices stay simulated.
+5. **Email: [Resend](https://resend.com).** Copy your API key → `RESEND_API_KEY`. Without your own domain, Resend only delivers to the email you signed up with, which is fine for personal use. Keep `EMAIL_FROM="FareWatch <onboarding@resend.dev>"`.
+6. **Hosting: [Vercel](https://vercel.com) (Hobby plan).** Import this GitHub repo and set the environment variables:
+   `APP_URL` (your `https://….vercel.app` URL), `SESSION_SECRET`, `ALLOWED_EMAILS` (your Gmail address), `INBOUND_SECRET`, `CRON_SECRET`, plus the keys above.
+7. **Scheduler: GitHub Actions.** In the repo, open Settings → Secrets and variables → Actions and add `APP_URL` and `CRON_SECRET`. The workflow runs every 6 hours. You can also start it by hand from the Actions tab.
+8. **Gmail auto-import.** Open `scripts/gmail-apps-script.gs` and follow the steps at the top: paste it into [script.google.com](https://script.google.com), fill in `APP_URL` and `INBOUND_SECRET`, and run `setup`.
+9. **iPhone.** Open your app URL in Safari, tap Share → **Add to Home Screen**, and sign in with your Gmail address.
 
-**Security note:** mailbox refresh tokens are stored in the database as plain text. Encrypt them at rest (e.g. with a KMS key) before storing real users' tokens.
+## Notes
 
-## Ideas for next steps
-
-- Mobile app / push notifications
-- One-tap rebooking links and tracking of credits earned
-- Hotel and rental-car price tracking with the same pipeline
-- Multi-currency conversion for bookings made in a foreign currency
+- Hotel prices come from Google Hotels search results, not directly from the chains, so occasionally the official site may show a slightly different price. Always confirm the price on the official site before rebooking.
+- Direct Gmail/Outlook OAuth connections are also supported (`GOOGLE_*` / `MICROSOFT_*`), but for personal use the Apps Script is simpler. Unverified Google OAuth apps must be reconnected every 7 days. Refresh tokens are stored unencrypted.

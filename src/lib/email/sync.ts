@@ -10,7 +10,7 @@ export async function syncConnection(connection: repo.MailConnection) {
 
   const summary = { scanned: messages.length, added: 0, updated: 0, skipped: 0, failed: 0 };
   for (const message of messages) {
-    if (!repo.markMessageProcessed(connection.userId, connection.provider, message.id)) continue;
+    if (!(await repo.markMessageProcessed(connection.userId, connection.provider, message.id))) continue;
     try {
       const result = await ingestEmail(connection.userId, message, connection.provider);
       if (!result.ok) summary.skipped++;
@@ -18,17 +18,17 @@ export async function syncConnection(connection: repo.MailConnection) {
       else summary.updated++;
     } catch (err) {
       summary.failed++;
-      repo.unmarkMessageProcessed(connection.userId, connection.provider, message.id);
+      await repo.unmarkMessageProcessed(connection.userId, connection.provider, message.id);
       console.error(`Failed to ingest ${connection.provider} message ${message.id}`, err);
     }
   }
-  repo.updateConnectionAfterSync(connection.id, refreshToken);
+  await repo.updateConnectionAfterSync(connection.id, refreshToken);
   return summary;
 }
 
 export async function syncAllConnections() {
   const results = [];
-  for (const connection of repo.listConnections()) {
+  for (const connection of await repo.listConnections()) {
     try {
       results.push({ id: connection.id, ...(await syncConnection(connection)) });
     } catch (err) {

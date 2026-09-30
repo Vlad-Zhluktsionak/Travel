@@ -37,8 +37,8 @@ async function getJson<T>(url: string, accessToken: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-// Subject keywords used by airlines and OTAs for booking confirmations.
-const SUBJECT_TERMS = ["flight confirmation", "itinerary", "e-ticket", "eticket", "booking confirmation", "trip confirmation", "your flight", "reservation confirmation", "travel receipt"];
+// Subject keywords used by airlines and hotel chains for booking confirmations.
+const SUBJECT_TERMS = ["flight confirmation", "itinerary", "e-ticket", "eticket", "booking confirmation", "trip confirmation", "your flight", "reservation confirmation", "travel receipt", "your reservation", "your stay", "hotel confirmation"];
 
 // ---------------- Gmail ----------------
 

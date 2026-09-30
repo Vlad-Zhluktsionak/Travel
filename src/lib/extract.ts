@@ -12,29 +12,56 @@ const SegmentSchema = z.object({
   arrival_local: z.string().nullable().describe("Local arrival date/time at destination, YYYY-MM-DDTHH:MM"),
 });
 
-export const ExtractionSchema = z.object({
-  is_flight_booking: z
-    .boolean()
-    .describe("True only if this email confirms a purchased flight booking/e-ticket (not a promo, check-in reminder without itinerary, or search result)"),
-  confirmation_code: z.string().nullable().describe("Airline record locator / PNR, or the booking site's reference if that's all there is"),
-  airline: z.string().nullable().describe("Name of the main operating/marketing airline"),
+const FlightSchema = z.object({
+  airline: z.string().nullable().describe("Name of the main marketing airline"),
   booking_site: z.string().nullable().describe("Where it was purchased if not directly from the airline (Expedia, Chase Travel, ...)"),
   passenger_names: z.array(z.string()),
   passenger_count: z.number().int(),
   cabin: z.enum(["economy", "premium_economy", "business", "first"]),
   fare_brand: z.string().nullable().describe("Fare family if stated, e.g. 'Basic Economy', 'Main Cabin', 'Economy Light'"),
-  total_paid: z.number().nullable().describe("Total amount charged for the flights for all passengers, as a decimal number in the currency's major unit"),
-  currency: z.string().nullable().describe("ISO 4217 code, e.g. USD"),
   slices: z
     .array(z.array(SegmentSchema))
     .describe("One entry per journey direction (outbound, return, additional legs of a multi-city trip). Each is its ordered list of flight segments incl. connections."),
 });
 
+const HotelSchema = z.object({
+  hotel_name: z.string().describe("Full property name, e.g. 'Courtyard by Marriott Boston Downtown'"),
+  chain: z.enum(["marriott", "hilton", "hyatt", "ihg", "other"]).describe("Parent company of the brand (e.g. Westin → marriott, Hampton Inn → hilton, Holiday Inn → ihg)"),
+  booked_directly: z
+    .boolean()
+    .describe("True if booked on the hotel's or hotel chain's own website/app/phone line; false for online travel agencies and aggregators (Expedia, Booking.com, Hotels.com, Priceline, Agoda, credit-card travel portals, ...)"),
+  booking_site: z.string().nullable().describe("Name of the site it was booked through"),
+  city: z.string().nullable(),
+  address: z.string().nullable(),
+  check_in: z.string().describe("YYYY-MM-DD"),
+  check_out: z.string().describe("YYYY-MM-DD"),
+  adults: z.number().int().describe("Adults per room"),
+  rooms: z.number().int(),
+  room_type: z.string().nullable(),
+  rate_name: z.string().nullable().describe("Rate plan, e.g. 'Member Flexible Rate', 'Advance Purchase'"),
+  refundable: z.boolean().nullable().describe("True if it can be cancelled free of charge, false if prepaid/non-refundable, null if the email doesn't say"),
+  cancel_by: z.string().nullable().describe("Last date for free cancellation, YYYY-MM-DD, if stated"),
+});
+
+export const ExtractionSchema = z.object({
+  booking_type: z
+    .enum(["flight", "hotel", "none"])
+    .describe("'flight' or 'hotel' only if this email confirms a purchased booking; 'none' for promos, reminders without the itinerary, receipts for other things, etc."),
+  confirmation_code: z.string().nullable().describe("Airline record locator / PNR, or hotel confirmation number"),
+  total_paid: z
+    .number()
+    .nullable()
+    .describe("Flights: total charged for the airfare for all passengers. Hotels: total for the whole stay incl. taxes and fees (estimated total if pay-at-hotel). Decimal number in the currency's major unit."),
+  currency: z.string().nullable().describe("ISO 4217 code, e.g. USD"),
+  flight: FlightSchema.nullable().describe("Required when booking_type is 'flight', otherwise null"),
+  hotel: HotelSchema.nullable().describe("Required when booking_type is 'hotel', otherwise null"),
+});
+
 export type Extraction = z.infer<typeof ExtractionSchema>;
 
-const SYSTEM_PROMPT = `You read airline and travel-agency emails and extract the booked flight itinerary so a price tracker can re-price the exact same flights later.
+const SYSTEM_PROMPT = `You read flight and hotel confirmation emails and extract the booking so a price tracker can re-price the exact same trip later.
 
-Be precise: the tracker searches for these exact flight numbers on these exact dates, so copy codes, dates and times verbatim from the email. If the email is a forwarded message, extract the original booking inside it. If a schedule change email lists both old and new flights, use the new ones. Report the total price actually paid for airfare (base fare + taxes and carrier fees, excluding seat upgrades, bags and insurance where they are itemized separately). If a value is not present in the email, return null rather than guessing.`;
+Be precise: the tracker searches for these exact flights/hotel on these exact dates, so copy codes, names, dates and times verbatim from the email. If the email is a forwarded message, extract the original booking inside it. If a schedule change or modification email lists both old and new details, use the new ones. For flights, report the airfare actually paid (base fare + taxes and carrier fees, excluding seats, bags and insurance where itemized separately). If a value is not present in the email, return null rather than guessing.`;
 
 /** Emails beyond this size are rejected rather than silently truncated. */
 export const MAX_EMAIL_CHARS = 150_000;
@@ -44,14 +71,16 @@ export class ExtractionError extends Error {}
 let defaultClient: Anthropic | undefined;
 const getClient = () => (defaultClient ??= new Anthropic());
 
+export type ExtractResult = { booking: ParsedBooking | null; reason?: string };
+
 /**
- * Ask Claude to pull a structured itinerary out of a confirmation email.
- * Returns null when the email isn't a flight booking or lacks what we need to track it.
+ * Ask Claude to pull a structured booking out of a confirmation email.
+ * Returns null (with a reason) when the email isn't a trackable booking.
  */
 export async function extractBooking(
   email: { subject: string; from?: string | null; text: string },
   client: Anthropic = getClient(),
-): Promise<{ booking: ParsedBooking | null; reason?: string }> {
+): Promise<ExtractResult> {
   if (email.text.length > MAX_EMAIL_CHARS) {
     throw new ExtractionError(`Email is too long to parse (${email.text.length} characters).`);
   }
@@ -79,19 +108,66 @@ export async function extractBooking(
     throw new ExtractionError("The model ran out of output tokens while reading this email.");
   }
   const parsed = response.parsed_output;
-  if (!parsed) throw new ExtractionError("The model did not return a valid itinerary.");
+  if (!parsed) throw new ExtractionError("The model did not return a valid booking.");
   return toParsedBooking(parsed);
 }
 
+const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+
 /** Validate the model's extraction and convert it into our domain type. */
-export function toParsedBooking(x: Extraction): { booking: ParsedBooking | null; reason?: string } {
-  if (!x.is_flight_booking) return { booking: null, reason: "This doesn't look like a flight booking confirmation." };
-  if (!x.confirmation_code) return { booking: null, reason: "No confirmation code found." };
+export function toParsedBooking(x: Extraction): ExtractResult {
+  if (x.booking_type === "none") return { booking: null, reason: "This doesn't look like a flight or hotel booking confirmation." };
+  if (!x.confirmation_code) return { booking: null, reason: "No confirmation number found." };
   if (x.total_paid === null || !x.currency) {
     return { booking: null, reason: "Couldn't find the price you paid, so there's nothing to compare against." };
   }
+  const base = {
+    confirmationCode: x.confirmation_code.trim().toUpperCase(),
+    paidCents: Math.round(x.total_paid * 100),
+    currency: x.currency.trim().toUpperCase(),
+  };
 
-  const slices = x.slices
+  if (x.booking_type === "hotel") {
+    const h = x.hotel;
+    if (!h) return { booking: null, reason: "Couldn't read the hotel details." };
+    if (!h.booked_directly) {
+      return {
+        booking: null,
+        reason: `Only hotel stays booked directly on the hotel's official site are tracked${h.booking_site ? ` (this one was booked via ${h.booking_site})` : ""}.`,
+      };
+    }
+    const checkIn = h.check_in.trim();
+    const checkOut = h.check_out.trim();
+    if (!isDate(checkIn) || !isDate(checkOut) || checkOut <= checkIn) {
+      return { booking: null, reason: "Couldn't read the check-in and check-out dates reliably." };
+    }
+    const cancelBy = h.cancel_by?.trim().slice(0, 10) ?? null;
+    return {
+      booking: {
+        kind: "hotel",
+        ...base,
+        details: {
+          hotelName: h.hotel_name.trim(),
+          chain: h.chain,
+          city: h.city,
+          address: h.address,
+          checkIn,
+          checkOut,
+          adults: Math.max(1, h.adults || 1),
+          rooms: Math.max(1, h.rooms || 1),
+          roomType: h.room_type,
+          rateName: h.rate_name,
+          refundable: h.refundable,
+          cancelBy: cancelBy && isDate(cancelBy) ? cancelBy : null,
+          propertyToken: null,
+        },
+      },
+    };
+  }
+
+  const f = x.flight;
+  if (!f) return { booking: null, reason: "Couldn't read the flight details." };
+  const slices = f.slices
     .map((slice) =>
       slice.map((s) => ({
         carrier: s.carrier_iata.trim().toUpperCase(),
@@ -118,16 +194,17 @@ export function toParsedBooking(x: Extraction): { booking: ParsedBooking | null;
 
   return {
     booking: {
-      confirmationCode: x.confirmation_code.trim().toUpperCase(),
-      airline: x.airline,
-      bookingSite: x.booking_site,
-      passengerNames: x.passenger_names,
-      passengerCount: Math.max(1, x.passenger_count || x.passenger_names.length || 1),
-      cabin: x.cabin,
-      fareBrand: x.fare_brand,
-      paidCents: Math.round(x.total_paid * 100),
-      currency: x.currency.trim().toUpperCase(),
-      slices,
+      kind: "flight",
+      ...base,
+      details: {
+        airline: f.airline,
+        bookingSite: f.booking_site,
+        passengerNames: f.passenger_names,
+        passengerCount: Math.max(1, f.passenger_count || f.passenger_names.length || 1),
+        cabin: f.cabin,
+        fareBrand: f.fare_brand,
+        slices,
+      },
     },
   };
 }

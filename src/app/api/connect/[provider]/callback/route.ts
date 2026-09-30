@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ provider: s
 
   try {
     const { refreshToken, email } = await provider.exchangeCode(code);
-    repo.saveConnection(user.id, provider.id, email, refreshToken);
+    await repo.saveConnection(user.id, provider.id, email, refreshToken);
   } catch (err) {
     console.error(`${provider.label} connection failed`, err);
     return NextResponse.redirect(`${config.appUrl}/?error=connect-failed`);
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ provider: s
 
   // Kick off the first scan after responding so the user isn't left waiting on a spinner.
   after(async () => {
-    const connection = repo.listConnections(user.id).find((c) => c.provider === provider.id && !c.lastSyncedAt);
+    const connection = (await repo.listConnections(user.id)).find((c) => c.provider === provider.id && !c.lastSyncedAt);
     if (connection) await syncConnection(connection).catch((err) => console.error("Initial sync failed", err));
   });
 

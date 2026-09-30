@@ -1,26 +1,35 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { rebookAdvice } from "@/lib/airlines";
-import { formatLocal, formatMoney } from "@/lib/format";
+import { hotelAdvice, rebookAdvice } from "@/lib/advice";
+import { formatDate, formatLocal, formatMoney } from "@/lib/format";
+import { describeTrip } from "@/lib/monitor";
+import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
 import { requireUser } from "@/lib/session";
-import type { PriceCheck } from "@/lib/types";
+import type { FlightBooking, HotelBooking, PriceCheck } from "@/lib/types";
 import { checkNow, removeBooking, setTracking } from "../../actions";
 
 export const dynamic = "force-dynamic";
 
+const utc = (sqlTime: string) => new Date(`${sqlTime.replace(" ", "T")}Z`);
+
 export default async function TripPage({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
-  const booking = repo.getBooking(Number((await params).id), user.id);
+  const booking = await repo.getBooking(Number((await params).id), user.id);
   if (!booking) notFound();
 
-  const checks = repo.listPriceChecks(booking.id);
-  const alerts = repo.listAlerts(booking.id);
-  const latest = repo.latestPriceCheck(booking.id);
+  const [checks, alerts, latest] = await Promise.all([
+    repo.listPriceChecks(booking.id),
+    repo.listAlerts(booking.id),
+    repo.latestPriceCheck(booking.id),
+  ]);
   const comparable = latest && latest.currency === booking.currency ? latest.priceCents! : null;
   const savings = comparable !== null ? booking.paidCents - comparable : null;
-  const first = booking.slices[0][0];
   const lastCheck = checks[checks.length - 1];
+  const advice =
+    booking.kind === "hotel"
+      ? hotelAdvice(booking.details)
+      : rebookAdvice(booking.details.slices[0][0].carrier, booking.details.fareBrand);
 
   return (
     <>
@@ -30,12 +39,10 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         <div className="row" style={{ justifyContent: "space-between" }}>
           <div>
             <h2 style={{ fontSize: 22, marginBottom: 4 }}>
-              {booking.slices.map((s) => `${s[0].origin} → ${s[s.length - 1].destination}`).join("  ·  ")}
+              {booking.kind === "hotel" ? "🏨 " + booking.details.hotelName : "✈️ " + booking.details.slices.map((s) => `${s[0].origin} → ${s[s.length - 1].destination}`).join("  ·  ")}
             </h2>
             <div className="muted small">
-              {booking.airline ?? first.carrier} · Confirmation <b>{booking.confirmationCode}</b>
-              {booking.bookingSite && <> · via {booking.bookingSite}</>} · {booking.cabin.replace("_", " ")}
-              {booking.fareBrand && <> ({booking.fareBrand})</>} · {booking.passengerCount} passenger(s)
+              Confirmation <b>{booking.confirmationCode}</b> · {booking.kind === "hotel" ? hotelSummary(booking) : flightSummary(booking)}
             </div>
           </div>
           <div className="price">
@@ -46,8 +53,10 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
 
         {savings !== null && savings > 0 && booking.status === "active" && (
           <div className="notice good" style={{ marginTop: 16 }}>
-            <b>The same flights now cost {formatMoney(comparable!, booking.currency)} — {formatMoney(savings, booking.currency)} less.</b>
-            <div className="small" style={{ marginTop: 4 }}>{rebookAdvice(first.carrier, booking.fareBrand)}</div>
+            <b>
+              {describeTrip(booking)} now costs {formatMoney(comparable!, booking.currency)} — {formatMoney(savings, booking.currency)} less.
+            </b>
+            <div className="small" style={{ marginTop: 4 }}>{advice}</div>
           </div>
         )}
         {latest && latest.currency !== booking.currency && (
@@ -63,7 +72,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         <div className="row" style={{ marginTop: 12, justifyContent: "space-between" }}>
           <span className="muted small">
             {lastCheck
-              ? `Last checked ${new Date(lastCheck.checkedAt + "Z").toLocaleString()} via ${lastCheck.provider}${lastCheck.note ? ` — ${lastCheck.note}` : ""}`
+              ? `Last checked ${utc(lastCheck.checkedAt).toLocaleString()} via ${lastCheck.provider}${lastCheck.note ? ` — ${lastCheck.note}` : ""}`
               : "Not checked yet"}
           </span>
           <div className="row">
@@ -81,26 +90,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         </div>
       </section>
 
-      <section className="card">
-        <h2>Flights</h2>
-        <table className="segments">
-          <thead><tr><th>Flight</th><th>From</th><th>To</th><th>Departs (local)</th><th>Arrives (local)</th></tr></thead>
-          <tbody>
-            {booking.slices.flatMap((slice, i) =>
-              slice.map((s, j) => (
-                <tr key={`${i}-${j}`}>
-                  <td>{s.carrier} {s.flightNumber}</td>
-                  <td>{s.origin}</td>
-                  <td>{s.destination}</td>
-                  <td>{formatLocal(s.departureLocal)}</td>
-                  <td>{s.arrivalLocal ? formatLocal(s.arrivalLocal) : "—"}</td>
-                </tr>
-              )),
-            )}
-          </tbody>
-        </table>
-        {booking.passengerNames.length > 0 && <p className="muted small">Passengers: {booking.passengerNames.join(", ")}</p>}
-      </section>
+      {booking.kind === "hotel" ? <HotelDetailsCard booking={booking} /> : <FlightDetailsCard booking={booking} />}
 
       {alerts.length > 0 && (
         <section className="card">
@@ -108,7 +98,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
           <ul>
             {alerts.map((a) => (
               <li key={a.id}>
-                {new Date(a.createdAt + "Z").toLocaleString()}: {formatMoney(a.foundCents, a.currency)} (save{" "}
+                {utc(a.createdAt).toLocaleString()}: {formatMoney(a.foundCents, a.currency)} (save{" "}
                 {formatMoney(a.paidCents - a.foundCents, a.currency)})
               </li>
             ))}
@@ -121,6 +111,71 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         <button className="danger" type="submit">Stop tracking &amp; delete trip</button>
       </form>
     </>
+  );
+}
+
+function flightSummary(b: FlightBooking) {
+  const f = b.details;
+  return [
+    f.airline ?? f.slices[0][0].carrier,
+    f.bookingSite && `via ${f.bookingSite}`,
+    f.cabin.replace("_", " ") + (f.fareBrand ? ` (${f.fareBrand})` : ""),
+    `${f.passengerCount} passenger(s)`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function hotelSummary(b: HotelBooking) {
+  const h = b.details;
+  return [h.city, `${formatDate(h.checkIn)} → ${formatDate(h.checkOut)}`, `${nightsBetween(h.checkIn, h.checkOut)} nights`].filter(Boolean).join(" · ");
+}
+
+function HotelDetailsCard({ booking }: { booking: HotelBooking }) {
+  const h = booking.details;
+  const refundability =
+    h.refundable === true ? `Refundable${h.cancelBy ? ` — free cancellation until ${formatDate(h.cancelBy)}` : ""}` : h.refundable === false ? "Non-refundable (can't cancel and rebook)" : "Not stated in the confirmation";
+  const rows: [string, string][] = [
+    ["Check-in", formatDate(h.checkIn)],
+    ["Check-out", formatDate(h.checkOut)],
+    ["Guests", `${h.adults} adult(s) · ${h.rooms} room(s)`],
+    ["Room", h.roomType ?? "—"],
+    ["Rate", h.rateName ?? "—"],
+    ["Cancellation", refundability],
+    ["Address", h.address ?? "—"],
+  ];
+  return (
+    <section className="card">
+      <h2>Stay</h2>
+      <table className="segments"><tbody>{rows.map(([k, v]) => <tr key={k}><th>{k}</th><td>{v}</td></tr>)}</tbody></table>
+      <p className="muted small">Prices are compared only against the hotel&apos;s official website, for the same dates and number of guests.</p>
+    </section>
+  );
+}
+
+function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
+  const f = booking.details;
+  return (
+    <section className="card">
+      <h2>Flights</h2>
+      <table className="segments">
+        <thead><tr><th>Flight</th><th>From</th><th>To</th><th>Departs (local)</th><th>Arrives (local)</th></tr></thead>
+        <tbody>
+          {f.slices.flatMap((slice, i) =>
+            slice.map((s, j) => (
+              <tr key={`${i}-${j}`}>
+                <td>{s.carrier} {s.flightNumber}</td>
+                <td>{s.origin}</td>
+                <td>{s.destination}</td>
+                <td>{formatLocal(s.departureLocal)}</td>
+                <td>{s.arrivalLocal ? formatLocal(s.arrivalLocal) : "—"}</td>
+              </tr>
+            )),
+          )}
+        </tbody>
+      </table>
+      {f.passengerNames.length > 0 && <p className="muted small">Passengers: {f.passengerNames.join(", ")}</p>}
+    </section>
   );
 }
 
@@ -145,11 +200,11 @@ function PriceChart({ checks, paidCents, currency }: { checks: PriceCheck[]; pai
       <path className="line" d={path} />
       {points.map((p, i) => (
         <circle key={p.id} className="dot" cx={x(i)} cy={y(p.priceCents!)} r={3}>
-          <title>{`${new Date(p.checkedAt + "Z").toLocaleString()}: ${formatMoney(p.priceCents!, currency)}`}</title>
+          <title>{`${utc(p.checkedAt).toLocaleString()}: ${formatMoney(p.priceCents!, currency)}`}</title>
         </circle>
       ))}
-      <text x={PAD_L} y={H - 6}>{new Date(points[0].checkedAt + "Z").toLocaleDateString()}</text>
-      <text x={W - PAD_R} y={H - 6} textAnchor="end">{new Date(points[points.length - 1].checkedAt + "Z").toLocaleDateString()}</text>
+      <text x={PAD_L} y={H - 6}>{utc(points[0].checkedAt).toLocaleDateString()}</text>
+      <text x={W - PAD_R} y={H - 6} textAnchor="end">{utc(points[points.length - 1].checkedAt).toLocaleDateString()}</text>
     </svg>
   );
 }

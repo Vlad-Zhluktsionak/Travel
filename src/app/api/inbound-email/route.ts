@@ -5,6 +5,8 @@ import { forwardTokenFromAddresses, normalizeInbound } from "@/lib/email/normali
 import { describeBooking, ingestEmail } from "@/lib/ingest";
 import { sendEmail } from "@/lib/notify";
 import * as repo from "@/lib/repo";
+import { isEmailAllowed } from "@/lib/session";
+import type { User } from "@/lib/types";
 
 export const maxDuration = 120;
 
@@ -16,9 +18,25 @@ function secretMatches(provided: string | null) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/** Personal forwarding address first, then a registered user among the recipients, then the sender. */
+async function routeToUser(to: string[], from: string | null): Promise<User | null> {
+  const token = forwardTokenFromAddresses(to, config.inboundDomain);
+  if (token) {
+    const user = await repo.findUserByForwardToken(token);
+    if (user) return user;
+  }
+  for (const address of [...to, ...(from ? [from] : [])]) {
+    const user = await repo.findUserByEmail(address);
+    if (user) return user;
+  }
+  return null;
+}
+
 /**
- * Webhook for forwarded confirmation emails. Point your inbound mail provider
- * (Postmark / SendGrid Inbound Parse / Mailgun Routes) at /api/inbound-email?secret=INBOUND_SECRET.
+ * Webhook for confirmation emails, called by:
+ * - the Gmail Apps Script in scripts/gmail-apps-script.gs (sends `Source: "gmail-script"`), or
+ * - an inbound mail service (Postmark / SendGrid Inbound Parse / Mailgun Routes) for the forwarding address.
+ * URL: /api/inbound-email?secret=INBOUND_SECRET
  */
 export async function POST(req: NextRequest) {
   if (!secretMatches(req.nextUrl.searchParams.get("secret"))) {
@@ -34,38 +52,42 @@ export async function POST(req: NextRequest) {
   }
 
   const email = normalizeInbound(payload);
+  const source = payload.Source === "gmail-script" ? "gmail-script" : "forward";
 
-  // Route by the personal forwarding address first, then by the sender's registered email.
-  const token = forwardTokenFromAddresses(email.to, config.inboundDomain);
-  const user = (token && repo.findUserByForwardToken(token)) || (email.from && repo.findUserByEmail(email.from)) || null;
-  if (!user) {
-    // 200 so the mail provider doesn't retry an email we'll never be able to route.
+  const user = await routeToUser(email.to, email.from);
+  if (!user || !isEmailAllowed(user.email)) {
+    // 200 so the sender doesn't retry an email we'll never be able to route.
     return NextResponse.json({ ok: false, reason: "unknown recipient" });
   }
 
-  if (email.messageId && !repo.markMessageProcessed(user.id, "forward", email.messageId)) {
+  if (email.messageId && !(await repo.markMessageProcessed(user.id, source, email.messageId))) {
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
-  let reply: { subject: string; text: string };
+  let result;
   try {
-    const result = await ingestEmail(user.id, email, "forward");
-    reply = result.ok
+    result = await ingestEmail(user.id, email, source);
+  } catch (err) {
+    if (email.messageId) await repo.unmarkMessageProcessed(user.id, source, email.messageId);
+    console.error("Inbound ingestion failed", err);
+    // 500 lets the sender retry later.
+    return NextResponse.json({ ok: false, reason: "processing failed" }, { status: 500 });
+  }
+
+  // The Gmail script scans automatically, so only confirm successes; a manual forward always gets a reply.
+  if (result.ok || source === "forward") {
+    const icon = result.ok && result.booking.kind === "hotel" ? "🏨" : "✈️";
+    const reply = result.ok
       ? {
-          subject: result.created ? "✈️ We're watching your flight price" : "✈️ Trip updated",
+          subject: `${icon} ${result.created ? "We're watching the price" : "Trip updated"}`,
           text: `Got it! We're now tracking ${describeBooking(result.booking)} and will email you if the price drops.\n\n${config.appUrl}/trips/${result.booking.id}`,
         }
       : {
           subject: "We couldn't track that email",
-          text: `We couldn't find a flight booking we can track in "${email.subject}": ${result.reason}\n\nTip: forward the airline's original confirmation email (with flight numbers, dates and the price paid).`,
+          text: `We couldn't find a booking we can track in "${email.subject}": ${result.reason}\n\nTip: forward the original confirmation email (with dates and the price paid).`,
         };
-  } catch (err) {
-    if (email.messageId) repo.unmarkMessageProcessed(user.id, "forward", email.messageId);
-    console.error("Inbound ingestion failed", err);
-    // 500 lets the inbound provider retry later.
-    return NextResponse.json({ ok: false, reason: "processing failed" }, { status: 500 });
+    await sendEmail({ to: user.email, ...reply }).catch((err) => console.error("Reply email failed", err));
   }
 
-  await sendEmail({ to: user.email, ...reply }).catch((err) => console.error("Reply email failed", err));
-  return NextResponse.json({ ok: true });
+  return NextResponse.json(result.ok ? { ok: true, bookingId: result.booking.id } : { ok: false, reason: result.reason });
 }

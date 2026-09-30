@@ -3,5 +3,5 @@ import path from "node:path";
 
 export default defineConfig({
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
-  test: { env: { DATABASE_PATH: ":memory:", SESSION_SECRET: "test-secret" } },
+  test: { env: { DATABASE_URL: ":memory:", SESSION_SECRET: "test-secret" } },
 });
