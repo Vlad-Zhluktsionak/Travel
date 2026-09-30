@@ -223,6 +223,10 @@ export async function setBookingStatus(id: number, status: Booking["status"], us
 }
 
 export async function deleteBooking(id: number, userId: number) {
+  if (!(await getBooking(id, userId))) return;
+  // Explicit child deletes: over Turso's HTTP protocol the foreign_keys pragma doesn't persist between requests.
+  await run("DELETE FROM price_checks WHERE booking_id = ?", [id]);
+  await run("DELETE FROM alerts WHERE booking_id = ?", [id]);
   await run("DELETE FROM bookings WHERE id = ? AND user_id = ?", [id, userId]);
 }
 

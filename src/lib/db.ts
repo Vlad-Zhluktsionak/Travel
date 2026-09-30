@@ -1,4 +1,4 @@
-import { createClient, type Client, type InValue, type Row } from "@libsql/client";
+import type { Client, InValue, Row } from "@libsql/client";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config";
@@ -69,28 +69,41 @@ const SCHEMA = [
 ];
 
 let client: Client | undefined;
-let ready: Promise<void> | undefined;
+let ready: Promise<Client> | undefined;
 
 /**
- * Turso (hosted libSQL) when DATABASE_URL is a libsql:// URL, otherwise a local SQLite file.
+ * Turso (hosted libSQL) when DATABASE_URL is a libsql:// or https:// URL, otherwise a local SQLite file.
+ *
+ * Remote databases use the pure-HTTP client: the default entry point loads libSQL's native binary on
+ * import, which serverless hosts (Vercel) may not bundle, crashing every request. The native client is
+ * only loaded for local files.
  */
-function open(): Client {
+async function open(): Promise<Client> {
   const url = config.databaseUrl;
+  const authToken = process.env.DATABASE_AUTH_TOKEN;
+  if (/^(libsql|https?|wss?):/.test(url)) {
+    const { createClient } = await import("@libsql/client/web");
+    return createClient({ url, authToken });
+  }
   if (url.startsWith("file:")) {
     const file = url.slice("file:".length);
     fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   }
-  return createClient({ url, authToken: process.env.DATABASE_AUTH_TOKEN });
+  const { createClient } = await import("@libsql/client");
+  return createClient({ url, authToken });
 }
 
 async function getClient(): Promise<Client> {
-  client ??= open();
   ready ??= (async () => {
-    await client!.execute("PRAGMA foreign_keys = ON");
-    await client!.batch(SCHEMA, "write");
+    const c = await open();
+    await c.execute("PRAGMA foreign_keys = ON");
+    await c.batch(SCHEMA, "write");
+    client = c;
+    return c;
   })();
-  await ready;
-  return client;
+  // Don't cache a failed connection attempt; the next request should retry.
+  ready.catch(() => (ready = undefined));
+  return ready;
 }
 
 export async function all(sql: string, args: InValue[] = []): Promise<Row[]> {
