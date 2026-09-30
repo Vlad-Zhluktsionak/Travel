@@ -33,8 +33,8 @@ export function PasteForm() {
   const [state, action] = useActionState<FormState, FormData>(addFromPastedEmail, {});
   return (
     <form action={action} className="stack">
-      <textarea name="email" placeholder="Paste the full airline confirmation email here…" required />
-      <Submit pending="Reading with AI…">Track this flight</Submit>
+      <textarea name="email" placeholder="Paste the full flight or hotel confirmation email here…" required />
+      <Submit pending="Reading with AI…">Track this trip</Submit>
       {state.message && <div className={`notice ${state.ok ? "good" : "warn"}`}>{state.message}</div>}
     </form>
   );
