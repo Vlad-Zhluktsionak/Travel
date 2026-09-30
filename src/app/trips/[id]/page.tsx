@@ -179,7 +179,9 @@ function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
 }
 
 function PriceChart({ checks, paidCents, currency }: { checks: PriceCheck[]; paidCents: number; currency: string }) {
-  const points = checks.filter((c) => c.priceCents !== null && c.currency === currency);
+  const priced = checks.filter((c) => c.priceCents !== null && c.currency === currency);
+  // Once real prices exist, drop simulated demo-mode points so they don't distort the history.
+  const points = priced.some((c) => c.provider !== "mock") ? priced.filter((c) => c.provider !== "mock") : priced;
   if (points.length === 0) return <p className="muted">No prices recorded yet.</p>;
 
   const W = 640, H = 200, PAD_L = 64, PAD_R = 12, PAD_T = 12, PAD_B = 24;
