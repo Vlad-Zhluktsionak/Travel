@@ -34,10 +34,16 @@ export const config = {
   get hotelPriceProvider(): "serpapi" | "mock" {
     return process.env.SERPAPI_API_KEY ? "serpapi" : "mock";
   },
-  /** Scheduled runs skip trips checked more recently than this, to stay inside free API quotas. */
-  get checkIntervalHours() {
-    const hours = Number(process.env.PRICE_CHECK_INTERVAL_HOURS ?? 12);
-    return Number.isFinite(hours) && hours >= 0 ? hours : 12;
+  /**
+   * Scheduled runs skip trips checked more recently than this many hours. The scheduler fires every
+   * 6 hours, so the defaults sit an hour under 6 and 12 to tolerate schedule jitter: flights are
+   * re-priced every run, hotels every other run (to stay inside SerpApi's free search quota).
+   */
+  checkIntervalHours(kind: "flight" | "hotel"): number {
+    const raw = kind === "flight" ? process.env.FLIGHT_CHECK_INTERVAL_HOURS : process.env.HOTEL_CHECK_INTERVAL_HOURS;
+    const fallback = kind === "flight" ? 5 : 11;
+    const hours = Number(raw ?? fallback);
+    return Number.isFinite(hours) && hours >= 0 ? hours : fallback;
   },
   get inboundDomain() {
     return process.env.INBOUND_DOMAIN || "in.example.com";

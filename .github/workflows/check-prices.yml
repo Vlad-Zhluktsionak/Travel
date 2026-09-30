@@ -2,7 +2,7 @@
 # price-check endpoint instead. Add two repository secrets (Settings → Secrets and variables → Actions):
 #   APP_URL      e.g. https://your-app.vercel.app
 #   CRON_SECRET  same value as CRON_SECRET in the app's environment variables
-# Each trip is only re-priced every PRICE_CHECK_INTERVAL_HOURS (default 12), whatever this schedule is.
+# Flights are re-priced on every run and hotels every other run (FLIGHT_/HOTEL_CHECK_INTERVAL_HOURS).
 name: Check prices
 
 on:

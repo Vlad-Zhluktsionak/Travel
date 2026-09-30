@@ -30,7 +30,7 @@ Get money back when your flight or hotel gets cheaper. FareWatch:
 | Database (Turso / local SQLite via libSQL) | `src/lib/db.ts`, `src/lib/repo.ts` |
 | Web UI (Next.js) | `src/app/` |
 
-**Alert rules:** you get an alert when `paid − current ≥ your threshold` (default $20). After an alert, you only get another one if the price falls at least $5 further. Prices in a different currency are recorded but never compared. Tracking stops on the departure or check-in date. Scheduled checks re-price each trip at most every `PRICE_CHECK_INTERVAL_HOURS` (default 12). The "Check price now" button ignores that limit.
+**Alert rules:** you get an alert when `paid − current ≥ your threshold` (default $20). After an alert, you only get another one if the price falls at least $5 further. Prices in a different currency are recorded but never compared. Tracking stops on the departure or check-in date. Scheduled checks re-price flights about every 6 hours and hotels about every 12 hours (minimum gaps set by `FLIGHT_CHECK_INTERVAL_HOURS`, default 5, and `HOTEL_CHECK_INTERVAL_HOURS`, default 11, just under the 6-hour schedule to absorb its jitter). The "Check price now" button ignores that limit.
 
 ## Run it locally
 
@@ -56,7 +56,7 @@ Everything below has a free tier. The only paid piece is the Claude API, where r
 
 1. **Claude API key.** Create one at [console.anthropic.com](https://console.anthropic.com) and add a few dollars of credit → `ANTHROPIC_API_KEY`.
 2. **Database: [Turso](https://turso.tech).** Create a database, then copy its URL (`libsql://…`) → `DATABASE_URL` and an auth token → `DATABASE_AUTH_TOKEN`.
-3. **Hotel prices: [SerpApi](https://serpapi.com).** Copy your API key → `SERPAPI_API_KEY`. The free plan has a small monthly search quota (check their pricing page). Each hotel check uses 1 search, plus 1 extra the first time to find the hotel. At the default 12-hour interval, one tracked hotel uses about 60 searches a month; raise `PRICE_CHECK_INTERVAL_HOURS` if you track several.
+3. **Hotel prices: [SerpApi](https://serpapi.com).** Copy your API key → `SERPAPI_API_KEY`. The free plan has a small monthly search quota (check their pricing page). Each hotel check uses 1 search, plus 1 extra the first time to find the hotel. At the default 12-hour interval, one tracked hotel uses about 60 searches a month; raise `HOTEL_CHECK_INTERVAL_HOURS` if you track several.
 4. **Flight prices: [Duffel](https://duffel.com)** (optional, can be added later — leave `DUFFEL_ACCESS_TOKEN` unset rather than setting a placeholder). Copy an access token → `DUFFEL_ACCESS_TOKEN`. Test-mode tokens only return fake airlines, so real prices need a live-mode token. Without one, flight prices stay simulated.
 5. **Email: [Resend](https://resend.com).** Copy your API key → `RESEND_API_KEY`. Without your own domain, Resend only delivers to the email you signed up with, which is fine for personal use. Keep `EMAIL_FROM="FareWatch <onboarding@resend.dev>"`.
 6. **Hosting: [Vercel](https://vercel.com) (Hobby plan).** Import this GitHub repo and set the environment variables:

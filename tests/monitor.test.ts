@@ -95,6 +95,20 @@ describe("price monitor", () => {
     expect(await checkBooking(fresh, deps(provider, { force: false, now: new Date() }))).toEqual({ status: "skipped" });
   });
 
+  it("re-checks flights every ~6 hours and hotels every ~12 hours on scheduled runs", async () => {
+    const { booking: flight } = await setup();
+    const { booking: hotel } = await setup(hotelStay);
+    const provider = fixedProvider([90_000]);
+    const at = (hoursAfterCheck: number) => ({ ...deps(provider), force: false, now: new Date(Date.UTC(2030, 0, 1) + hoursAfterCheck * 3600_000) });
+    const checkedAtMidnight = { lastCheckedAt: "2030-01-01 00:00:00" };
+
+    // One scheduler tick later (~6 h, arriving a bit early): flights are due, hotels are not.
+    expect((await checkBooking({ ...flight, ...checkedAtMidnight }, at(5.5))).status).toBe("checked");
+    expect((await checkBooking({ ...hotel, ...checkedAtMidnight }, at(5.5))).status).toBe("skipped");
+    // Two ticks later (~12 h): hotels are due too.
+    expect((await checkBooking({ ...hotel, ...checkedAtMidnight }, at(11.5))).status).toBe("checked");
+  });
+
   it("marks trips as past once the start date arrives", async () => {
     await setup();
     await setup(hotelStay);

@@ -118,7 +118,7 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
             <input id="threshold" type="number" name="threshold" min={0} step={1} defaultValue={user.alertThresholdCents / 100} style={{ width: 100 }} />
             <button className="secondary" type="submit">Save</button>
           </form>
-          <p className="muted small">Prices are checked about every {config.checkIntervalHours} hours.</p>
+          <p className="muted small">Flight prices are checked about every 6 hours, hotel prices about every 12 hours.</p>
         </section>
       </div>
 

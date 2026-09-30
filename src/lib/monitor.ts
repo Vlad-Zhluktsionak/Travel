@@ -37,7 +37,7 @@ export async function checkBooking(booking: Booking, deps: MonitorDeps = {}): Pr
 
   if (!deps.force && booking.lastCheckedAt) {
     const hoursSince = (now.getTime() - Date.parse(`${booking.lastCheckedAt.replace(" ", "T")}Z`)) / 3600_000;
-    if (hoursSince < config.checkIntervalHours) return { status: "skipped" };
+    if (hoursSince < config.checkIntervalHours(booking.kind)) return { status: "skipped" };
   }
 
   const providers: Providers = { ...getProviders(), ...deps.providers };
