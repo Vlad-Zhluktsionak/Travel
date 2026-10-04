@@ -8,6 +8,7 @@ import * as repo from "@/lib/repo";
 import { requireUser } from "@/lib/session";
 import type { FlightBooking, HotelBooking, PriceCheck } from "@/lib/types";
 import { checkNow, removeBooking, setTracking } from "../../actions";
+import { PriceChart, type ChartPoint } from "./price-chart";
 
 export const dynamic = "force-dynamic";
 
@@ -67,7 +68,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
 
       <section className="card">
         <h2>Price history</h2>
-        <PriceChart checks={checks} paidCents={booking.paidCents} currency={booking.currency} />
+        <PriceHistory checks={checks} paidCents={booking.paidCents} currency={booking.currency} />
         <div className="row" style={{ marginTop: 12, justifyContent: "space-between" }}>
           <span className="muted small">
             {lastCheck
@@ -178,34 +179,32 @@ function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
   );
 }
 
-function PriceChart({ checks, paidCents, currency }: { checks: PriceCheck[]; paidCents: number; currency: string }) {
+function PriceHistory({ checks, paidCents, currency }: { checks: PriceCheck[]; paidCents: number; currency: string }) {
   const priced = checks.filter((c) => c.priceCents !== null && c.currency === currency);
   // Once real prices exist, drop simulated demo-mode points so they don't distort the history.
   const points = priced.some((c) => c.provider !== "mock") ? priced.filter((c) => c.provider !== "mock") : priced;
   if (points.length === 0) return <p className="muted">No prices recorded yet.</p>;
 
-  const W = 640, H = 200, PAD_L = 64, PAD_R = 12, PAD_T = 12, PAD_B = 24;
-  const values = [paidCents, ...points.map((p) => p.priceCents!)];
-  const min = Math.min(...values) * 0.97;
-  const max = Math.max(...values) * 1.03;
-  const x = (i: number) => PAD_L + (points.length === 1 ? (W - PAD_L - PAD_R) / 2 : (i / (points.length - 1)) * (W - PAD_L - PAD_R));
-  const y = (v: number) => PAD_T + (1 - (v - min) / (max - min || 1)) * (H - PAD_T - PAD_B);
-  const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.priceCents!).toFixed(1)}`).join(" ");
-  const lowest = Math.min(...points.map((p) => p.priceCents!));
-
+  const short = (cents: number) => formatMoney(cents, currency).replace(/\.00$/, "");
+  const chartPoints: ChartPoint[] = points.map((c) => {
+    const diff = c.priceCents! - paidCents;
+    return {
+      id: c.id,
+      cents: c.priceCents!,
+      price: formatMoney(c.priceCents!, currency),
+      when: formatTimestamp(c.checkedAt),
+      vsPaid: diff === 0 ? "Same as you paid" : `${formatMoney(Math.abs(diff), currency)} ${diff < 0 ? "below" : "above"} what you paid`,
+      below: diff < 0,
+    };
+  });
   return (
-    <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Price history chart">
-      <line className="paid" x1={PAD_L} x2={W - PAD_R} y1={y(paidCents)} y2={y(paidCents)} />
-      <text x={4} y={y(paidCents) + 4}>Paid {formatMoney(paidCents, currency).replace(/\.00$/, "")}</text>
-      <text x={4} y={y(lowest) + 4}>Low {formatMoney(lowest, currency).replace(/\.00$/, "")}</text>
-      <path className="line" d={path} />
-      {points.map((p, i) => (
-        <circle key={p.id} className="dot" cx={x(i)} cy={y(p.priceCents!)} r={3}>
-          <title>{`${formatTimestamp(p.checkedAt)}: ${formatMoney(p.priceCents!, currency)}`}</title>
-        </circle>
-      ))}
-      <text x={PAD_L} y={H - 6}>{formatTimestamp(points[0].checkedAt, true)}</text>
-      <text x={W - PAD_R} y={H - 6} textAnchor="end">{formatTimestamp(points[points.length - 1].checkedAt, true)}</text>
-    </svg>
+    <PriceChart
+      points={chartPoints}
+      paidCents={paidCents}
+      paidLabel={short(paidCents)}
+      lowLabel={short(Math.min(...chartPoints.map((p) => p.cents)))}
+      firstDate={formatTimestamp(points[0].checkedAt, true)}
+      lastDate={formatTimestamp(points[points.length - 1].checkedAt, true)}
+    />
   );
 }

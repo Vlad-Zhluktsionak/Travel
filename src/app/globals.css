@@ -124,6 +124,18 @@ table.segments td, table.segments th { padding: 8px 6px; border-bottom: 1px soli
 .chart .line { stroke: var(--accent); fill: none; stroke-width: 2; }
 .chart .dot { fill: var(--accent); }
 .chart text { fill: var(--muted); font-size: 11px; }
+.chart { cursor: crosshair; touch-action: pan-y; }
+.chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.chart .crosshair line { stroke: var(--muted); stroke-width: 1; }
+.chart .crosshair circle { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.chart-wrap { position: relative; }
+.chart-tip {
+  position: absolute; top: 0; pointer-events: none; display: flex; flex-direction: column; gap: 1px;
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); font-size: 12px; white-space: nowrap;
+}
+.chart-tip strong { font-size: 15px; color: var(--text); }
+.chart-tip .tip-good { color: var(--good); font-weight: 600; }
 
 @media (max-width: 560px) {
   .hero h1 { font-size: 28px; }
