@@ -34,16 +34,46 @@ const flightNo = (s: string) => {
   return m ? `${m[1].toUpperCase()}${m[2]}` : s.replace(/\s+/g, "").toUpperCase();
 };
 
-/** The listed itinerary flying exactly these segments, if any. */
+const AIRLINE_NAMES: Record<string, RegExp> = {
+  AS: /alaska/i, HA: /hawaiian/i, AA: /american/i, DL: /delta/i, UA: /united/i, B6: /jetblue/i, WN: /southwest/i,
+};
+
+/** "2031-01-15 10:13" / "2031-01-15T10:13" → "2031-01-15T10:13" */
+const minute = (t: string | undefined) => (t ?? "").replace(" ", "T").slice(0, 16);
+
+/** Same flight? By flight number, or (if Google writes it differently) same airline, airports and departure minute. */
+function sameLeg(leg: GoogleFlightLeg, seg: Segment): boolean {
+  const airportsMatch = leg.departure_airport?.id === seg.origin && leg.arrival_airport?.id === seg.destination;
+  if (!airportsMatch) return false;
+  if (flightNo(leg.flight_number ?? "") === `${seg.carrier}${seg.flightNumber}`) return true;
+  const sameAirline =
+    (leg.flight_number ?? "").toUpperCase().startsWith(seg.carrier) || (AIRLINE_NAMES[seg.carrier]?.test(leg.airline ?? "") ?? false);
+  return sameAirline && minute(leg.departure_airport?.time) === minute(seg.departureLocal);
+}
+
+/** The listed itinerary flying exactly these segments (with a price), if any. */
 export function findExactItinerary(response: GoogleFlightsResponse, slice: Segment[]): GoogleItinerary | null {
-  const wanted = slice.map((s) => `${s.carrier}${s.flightNumber}|${s.origin}|${s.destination}`);
   for (const it of [...(response.best_flights ?? []), ...(response.other_flights ?? [])]) {
     const legs = it.flights ?? [];
     if (legs.length !== slice.length || typeof it.price !== "number") continue;
-    const have = legs.map((l) => `${flightNo(l.flight_number ?? "")}|${l.departure_airport?.id ?? ""}|${l.arrival_airport?.id ?? ""}`);
-    if (have.every((h, i) => h === wanted[i])) return it;
+    if (legs.every((l, i) => sameLeg(l, slice[i]))) return it;
   }
   return null;
+}
+
+/** Short description of what Google listed, for diagnosing a non-match. */
+export function describeListings(response: GoogleFlightsResponse, currency: string): string {
+  const all = [...(response.best_flights ?? []), ...(response.other_flights ?? [])];
+  return all
+    .slice(0, 4)
+    .map((it) => {
+      const legs = (it.flights ?? [])
+        .map((l) => `${l.flight_number ?? "?"} ${l.departure_airport?.id ?? "?"}→${l.arrival_airport?.id ?? "?"} ${minute(l.departure_airport?.time).replace("T", " ") || "?"}${l.travel_class ? ` (${l.travel_class})` : ""}`)
+        .join(" + ");
+      const price = typeof it.price === "number" ? new Intl.NumberFormat("en-US", { style: "currency", currency }).format(it.price) : "no price";
+      return `${legs} ${price}`;
+    })
+    .join("; ");
 }
 
 export type LegPrice = { cents: number; currency: string; note: string } | { problem: string };
@@ -75,8 +105,12 @@ export class GoogleFlightsLegPricer {
     if (!res.ok || json.error) return { problem: `Google Flights lookup failed: ${json.error ?? `HTTP ${res.status}`}` };
     const match = findExactItinerary(json, slice);
     if (!match) {
-      const count = (json.best_flights?.length ?? 0) + (json.other_flights?.length ?? 0);
-      return { problem: `Google Flights didn't list your exact flight in this class (${count} other options listed).` };
+      const listed = describeListings(json, currency);
+      return {
+        problem: listed
+          ? `Google Flights didn't match your flight (${slice.map((g) => `${g.carrier} ${g.flightNumber} ${g.departureLocal.replace("T", " ")}`).join(" + ")}). It listed: ${listed}.`
+          : "Google Flights listed no flights in this class for that day.",
+      };
     }
     const cls = match.flights?.[0]?.travel_class;
     return { cents: Math.round(match.price! * 100), currency, note: `Google Flights${cls ? ` ${cls}` : ""}` };

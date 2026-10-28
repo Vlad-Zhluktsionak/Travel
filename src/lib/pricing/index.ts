@@ -20,7 +20,7 @@ export interface Providers {
  */
 export function cachedGooglePremium(pricer: GoogleFlightsLegPricer, maxAgeHours: number): PremiumLegPricer {
   return async (slice: Segment[], passengers: number, currency: string): Promise<LegPrice> => {
-    const key = `google-premium|${slice.map((s) => `${s.carrier}${s.flightNumber}@${s.departureLocal.slice(0, 10)}`).join(">")}|${passengers}|${currency}`;
+    const key = `google-premium-v2|${slice.map((s) => `${s.carrier}${s.flightNumber}@${s.departureLocal.slice(0, 10)}`).join(">")}|${passengers}|${currency}`;
     const saved = await repo.getExternalQuote(key, maxAgeHours);
     if (saved) {
       return saved.priceCents !== null && saved.currency

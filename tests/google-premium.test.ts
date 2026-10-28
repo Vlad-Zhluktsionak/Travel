@@ -72,6 +72,28 @@ describe("Google Flights lookup", () => {
     expect(findExactItinerary(googleListing, [seg("SEA", "PVR", "2031-01-15", "999")])).toBeNull();
   });
 
+  it("also matches the same airline, airports and departure minute when Google writes the flight number differently", () => {
+    const listing: GoogleFlightsResponse = {
+      best_flights: [{ price: 1180, flights: [{ flight_number: "AS1360A", airline: "Alaska", departure_airport: { id: "SEA", time: "2031-01-15 10:13" }, arrival_airport: { id: "PVR" } }] }],
+    };
+    expect(findExactItinerary(listing, [seg("SEA", "PVR", "2031-01-15", "1360")])?.price).toBe(1180);
+    const otherTime: GoogleFlightsResponse = {
+      best_flights: [{ price: 900, flights: [{ flight_number: "AS1360A", airline: "Alaska", departure_airport: { id: "SEA", time: "2031-01-15 16:40" }, arrival_airport: { id: "PVR" } }] }],
+    };
+    expect(findExactItinerary(otherTime, [seg("SEA", "PVR", "2031-01-15", "1360")])).toBeNull();
+  });
+
+  it("says what Google listed when nothing matches", async () => {
+    const listing: GoogleFlightsResponse = {
+      best_flights: [{ price: 1180, flights: [{ flight_number: "AS 1362", departure_airport: { id: "SEA", time: "2031-01-15 16:40" }, arrival_airport: { id: "PVR" }, travel_class: "Premium economy" }] }],
+    };
+    const fetchImpl = (async () => new Response(JSON.stringify(listing), { status: 200 })) as unknown as typeof fetch;
+    const result = await new GoogleFlightsLegPricer("key", fetchImpl).price([seg("SEA", "PVR", "2031-01-15", "1360")], 2, "USD", 2);
+    expect(result).toEqual({
+      problem: "Google Flights didn't match your flight (AS 1360 2031-01-15 10:13). It listed: AS 1362 SEA→PVR 2031-01-15 16:40 (Premium economy) $1,180.00.",
+    });
+  });
+
   it("asks Google for a one-way premium economy fare for all passengers", async () => {
     let url: URL | undefined;
     const fetchImpl = (async (u: string) => {
@@ -122,7 +144,7 @@ describe("pricing the user's Alaska trip", () => {
     const duffel = new DuffelPriceProvider("tok", duffelFetch([]), cachedGooglePremium(new GoogleFlightsLegPricer("key", googleFetch), 24));
     const q1 = await duffel.quote(pvr, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
     expect(q1.priceCents).toBeNull();
-    expect(q1.note).toContain("Google Flights: Google Flights didn't list your exact flight in this class");
+    expect(q1.note).toContain("Google Flights: Google Flights listed no flights in this class for that day.");
     const q2 = await duffel.quote(pvr, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
     expect(q2.note).toContain("saved lookup");
     expect(googleCalls).toBe(1);
