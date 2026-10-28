@@ -2,8 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { hotelAdvice, rebookAdvice } from "@/lib/advice";
 import { formatDate, formatLocal, formatMoney, formatTimestamp } from "@/lib/format";
-import { CABIN_LABELS, describeCabins, isMixedCabin, sliceCabins } from "@/lib/cabins";
-import { allOptions, detectedPaidKey, fareWatchSettings, optionLabel, searchPlan } from "@/lib/fares";
+import { allOptions, detectedPaidKey, fareWatchSettings, LEVEL_LABELS, optionLabel, searchPlan, type FareLevel } from "@/lib/fares";
 import { describeTrip, extraText } from "@/lib/monitor";
 import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
@@ -134,7 +133,8 @@ function flightSummary(b: FlightBooking) {
   return [
     f.airline ?? f.slices[0][0].carrier,
     f.bookingSite && `via ${f.bookingSite}`,
-    describeCabins(f) + (!isMixedCabin(f) && f.fareBrand ? ` (${f.fareBrand})` : ""),
+    // What was paid as set on the page (the email's reading, or the user's correction).
+    optionLabel(fareWatchSettings(f).paid),
     `${f.passengerCount} passenger(s)`,
   ]
     .filter(Boolean)
@@ -267,19 +267,22 @@ function FareWatchCard({ booking, options, lastPaidCheck }: { booking: FlightBoo
 
 function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
   const f = booking.details;
-  const cabins = sliceCabins(f);
+  const settings = fareWatchSettings(f);
+  const paidLevels = settings.paid.split("+") as FareLevel[];
+  const emailLevels = detectedPaidKey(f).split("+");
   const brands = f.sliceFareBrands ?? f.slices.map(() => f.fareBrand);
+  const mixed = new Set(paidLevels).size > 1;
   return (
     <section className="card">
       <h2>Flights</h2>
-      {isMixedCabin(f) && (
+      {mixed && (
         <p className="muted small">
           Different cabins each way: the price is checked as separate one-way fares in each cabin, added together. That&apos;s close to what
           the airline charges but an estimate, so confirm on the airline&apos;s site before rebooking.
         </p>
       )}
       <table className="segments">
-        <thead><tr><th>Flight</th><th>From</th><th>To</th><th>Departs (local)</th><th>Arrives (local)</th><th>Cabin / fare</th></tr></thead>
+        <thead><tr><th>Flight</th><th>From</th><th>To</th><th>Departs (local)</th><th>Arrives (local)</th><th>What I paid</th></tr></thead>
         <tbody>
           {f.slices.flatMap((slice, i) =>
             slice.map((s, j) => (
@@ -290,8 +293,9 @@ function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
                 <td>{formatLocal(s.departureLocal)}</td>
                 <td>{s.arrivalLocal ? formatLocal(s.arrivalLocal) : "—"}</td>
                 <td>
-                  {CABIN_LABELS[cabins[i]]}
-                  {brands[i] && <span className="muted small"> · {brands[i]}</span>}
+                  {LEVEL_LABELS[paidLevels[i]]}
+                  {/* The email's fare name, only when it describes the same level (not after a correction). */}
+                  {brands[i] && paidLevels[i] === emailLevels[i] && <span className="muted small"> · {brands[i]}</span>}
                 </td>
               </tr>
             )),
