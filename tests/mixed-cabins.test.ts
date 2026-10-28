@@ -90,7 +90,7 @@ describe("Duffel pricing for mixed-cabin trips", () => {
       [["SEA"], "premium_economy"],
       [["PVR"], "first"],
     ]);
-    expect(quote).toEqual({ priceCents: 142_000, currency: "USD", note: "Premium / First (2 one-way prices added together)" });
+    expect(quote).toEqual({ priceCents: 142_000, currency: "USD", note: "Premium out · First back — 2 one-way fares added together" });
   });
 
   it("reports no price (rather than a wrong one) when a leg's fare isn't offered", async () => {

@@ -90,7 +90,7 @@ describe("pricing the user's Alaska trip", () => {
     expect(quote).toEqual({
       priceCents: 84_550 + 7_900 + 8_900 + 140_000,
       currency: "USD",
-      note: "Main + premium seat / First (2 one-way prices added together)",
+      note: "Premium out (Main fare + Premium seats) · First back — 2 one-way fares added together",
     });
     expect(calls).toEqual(["search SEA economy", "search SEA premium_economy", "seatmap main", "search PVR first"]);
   });

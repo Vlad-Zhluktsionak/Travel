@@ -101,6 +101,21 @@ export function premiumSeatCost(
   return { cents: total, currency: currency ?? "USD" };
 }
 
+const LEVEL_SHORT_NAMES = { main: "Main", extra: "Premium", top: "First/Business" } as const;
+
+/**
+ * What was checked on one leg, and how it was priced: { name: "Premium", how: "Main fare + Premium seats" },
+ * { name: "First", how: null } (the airline's fare name is dropped when it just repeats the name).
+ */
+function legLabel(level: SliceTarget["level"], fareName: string | null | undefined): { name: string; how: string | null } {
+  let name: string = LEVEL_SHORT_NAMES[level];
+  // Show "First" or "Business" rather than "First/Business" when the airline's fare says which one it is.
+  if (level === "top" && fareName && /^first\b/i.test(fareName)) name = "First";
+  if (level === "top" && fareName && /^business\b/i.test(fareName)) name = "Business";
+  const how = fareName && fareName.trim().toLowerCase() !== name.toLowerCase() ? fareName : null;
+  return { name, how };
+}
+
 /** A Duffel API error, with the short code (e.g. "offer_no_longer_available") and a readable message. */
 export class DuffelError extends Error {
   constructor(
@@ -341,7 +356,7 @@ export class DuffelPriceProvider implements FlightPriceProvider {
         slices: offer.slices.map((sl, k) => ({
           ...sl,
           fare_brand_name:
-            targets[sliceIdx[k]].level === "extra" ? `${sl.fare_brand_name ?? "Main"} + premium seat` : sl.fare_brand_name,
+            targets[sliceIdx[k]].level === "extra" ? `${sl.fare_brand_name ?? "Main"} fare + Premium seats` : sl.fare_brand_name,
         })),
       },
     };
@@ -365,7 +380,7 @@ export class DuffelPriceProvider implements FlightPriceProvider {
     // is an estimate — the note says so.
     let total = 0;
     let currency: string | null = null;
-    const names: string[] = [];
+    const names: { name: string; how: string | null }[] = [];
     for (let i = 0; i < it.slices.length; i++) {
       const { offer, seen } = await this.best(it, [i], targets, ctx);
       if (!offer) {
@@ -377,8 +392,11 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       }
       currency = offer.total_currency;
       total += Math.round(Number(offer.total_amount) * 100);
-      names.push(offer.slices[0].fare_brand_name ?? LEVEL_LABELS[targets[i].level]);
+      names.push(legLabel(targets[i].level, offer.slices[0].fare_brand_name));
     }
-    return { priceCents: total, currency, note: `${names.join(" / ")} (${names.length} one-way prices added together)` };
+    const leg = (l: { name: string; how: string | null }, suffix: string) => `${l.name}${suffix}${l.how ? ` (${l.how})` : ""}`;
+    const legs =
+      names.length === 2 ? `${leg(names[0], " out")} · ${leg(names[1], " back")}` : names.map((n, i) => `Leg ${i + 1}: ${leg(n, "")}`).join(" · ");
+    return { priceCents: total, currency, note: `${legs} — ${names.length} one-way fares added together` };
   }
 }
