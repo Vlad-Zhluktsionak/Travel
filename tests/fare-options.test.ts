@@ -52,9 +52,9 @@ describe("fare levels and options", () => {
 
   it("reads what was paid from the email, defaults to watching only that, and honours corrections", () => {
     expect(detectedPaidKey(pvrDetails)).toBe("extra+top");
-    expect(fareWatchSettings(pvrDetails)).toEqual({ paid: "extra+top", paidOverridden: false, options: ["extra+top"], maxExtraCents: 20_000 });
+    expect(fareWatchSettings(pvrDetails)).toEqual({ paid: "extra+top", paidOverridden: false, options: ["extra+top"], maxExtraCents: 20_000, premiumSeatCentsPerPerson: null });
     const corrected = { ...pvrDetails, fareWatch: { paid: "main+top", options: ["top+top", "extra+top"], maxExtraCents: 30_000 } };
-    expect(fareWatchSettings(corrected)).toEqual({ paid: "main+top", paidOverridden: true, options: ["main+top", "top+top", "extra+top"], maxExtraCents: 30_000 });
+    expect(fareWatchSettings(corrected)).toEqual({ paid: "main+top", paidOverridden: true, options: ["main+top", "top+top", "extra+top"], maxExtraCents: 30_000, premiumSeatCentsPerPerson: null });
   });
 
   it("carries over the old 'Watch upgrades' switch without lowering any leg", () => {
@@ -81,10 +81,13 @@ describe("fare levels and options", () => {
   });
 
   it("counts searches: options sharing a cabin share a search", () => {
-    const s = (options: string[]) => searchPlan(roundTrip.details, { paid: "main+main", paidOverridden: false, options, maxExtraCents: 0 });
+    const s = (options: string[], seat: number | null = null) =>
+      searchPlan(roundTrip.details, { paid: "main+main", paidOverridden: false, options, maxExtraCents: 0, premiumSeatCentsPerPerson: seat });
     expect(s(["main+main"])).toEqual({ min: 1, max: 1 });
     // Same economy search; fallbacks: premium-economy cabin, then Google Flights for each direction (saved 24h).
     expect(s(["main+main", "extra+extra"])).toEqual({ min: 1, max: 4 });
+    // With a typed-in Premium seat price, Premium comes from the Main fare: no Google lookups.
+    expect(s(["main+main", "extra+extra"], 15_000)).toEqual({ min: 1, max: 2 });
     expect(s(["main+main", "top+top"])).toEqual({ min: 2, max: 3 }); // + business (first as fallback)
     expect(s(["main+main", "main+top"])).toEqual({ min: 3, max: 4 }); // mixed: one-way economy out + one-way business back
   });
@@ -180,6 +183,20 @@ describe("checking a trip's ticked fares", () => {
     expect(sent.map((e) => e.subject)).toEqual(["⬆️ Premium (extra legroom) round trip for +$60.00: SFO → BOS (round trip)"]);
     expect((await repo.listPriceChecks(booking.id)).map((c) => c.priceCents)).toEqual([90_000]); // paid history stays separate
     expect((await repo.upgradeSummaries(booking.id)).map((s) => s.cabin).sort()).toEqual(["extra+extra", "main+top", "top+top"]);
+  });
+
+  it("passes the typed-in Premium seat price to every quote", async () => {
+    const booking = await setup({ options: ["extra+extra"], maxExtraCents: 10_000, premiumSeatCentsPerPerson: 15_000 });
+    const seen: (number | null | undefined)[] = [];
+    const provider: FlightPriceProvider = {
+      name: "test",
+      async quote(it) {
+        seen.push(it.premiumSeatCentsPerPerson);
+        return { priceCents: 90_000, currency: "USD" };
+      },
+    };
+    await checkBooking(booking, { providers: { flight: provider }, mailer, now, force: true });
+    expect(seen).toEqual([15_000, 15_000]);
   });
 
   it("keeps fare-watch settings when the same confirmation is imported again", async () => {

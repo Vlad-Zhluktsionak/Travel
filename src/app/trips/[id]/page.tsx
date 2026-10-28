@@ -232,6 +232,23 @@ function FareWatchCard({ booking, options, lastPaidCheck }: { booking: FlightBoo
           <span className="muted small">more than I paid (all passengers)</span>
         </div>
         <div className="row">
+          <label htmlFor="premiumSeat">Premium seat price per person, each way: $</label>
+          <input
+            id="premiumSeat"
+            type="number"
+            name="premiumSeat"
+            min={0}
+            step="0.01"
+            defaultValue={settings.premiumSeatCentsPerPerson === null ? "" : settings.premiumSeatCentsPerPerson / 100}
+            placeholder="optional"
+            style={{ width: 100 }}
+          />
+          <span className="muted small">
+            Some airlines (like Alaska) sell Premium only as a seat upgrade on a Main ticket. Enter that seat price and Premium is
+            checked as the live Main fare + this for each passenger. Leave blank to look Premium up instead.
+          </span>
+        </div>
+        <div className="row">
           <SubmitButton pending="Saving & checking prices…" done="✓ Saved">Save</SubmitButton>
           <span className="muted small">
             {plan.min === plan.max ? plan.min : `${plan.min}–${plan.max}`} search{plan.max === 1 ? "" : "es"} per check

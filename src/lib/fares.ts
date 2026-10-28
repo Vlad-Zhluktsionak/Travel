@@ -142,6 +142,8 @@ export interface FareWatchSettings {
   /** Ticked options, always including `paid` first. */
   options: OptionKey[];
   maxExtraCents: number;
+  /** Premium seat price per passenger per direction; null = not entered. */
+  premiumSeatCentsPerPerson: number | null;
 }
 
 const DEFAULT_MAX_EXTRA_CENTS = 20_000;
@@ -168,7 +170,8 @@ export function fareWatchSettings(d: FlightDetails): FareWatchSettings {
   }
   const options = [paid, ...extras.filter((k, i) => k !== paid && extras.indexOf(k) === i)];
   const maxExtraCents = saved?.maxExtraCents ?? d.upgradeWatch?.maxExtraCents ?? DEFAULT_MAX_EXTRA_CENTS;
-  return { paid, paidOverridden: Boolean(override && override !== detected), options, maxExtraCents };
+  const premiumSeatCentsPerPerson = saved?.premiumSeatCentsPerPerson ?? null;
+  return { paid, paidOverridden: Boolean(override && override !== detected), options, maxExtraCents, premiumSeatCentsPerPerson };
 }
 
 /** Per-slice search targets for an option. The paid option keeps the email's fare names unless overridden. */
@@ -246,8 +249,9 @@ export function searchPlan(d: Itinerary, settings: FareWatchSettings): { min: nu
       const order = targets[g[0]].searchCabins;
       first.add(`${g.join(",")}|${order[0]}`);
       for (const c of order) all.add(`${g.join(",")}|${c}`);
-      // Premium may need a Google Flights lookup (SerpApi, saved for 24h) when Duffel doesn't sell it.
-      if (g.every((i) => targets[i].level === "extra")) for (const i of g) all.add(`${i}|google`);
+      // Premium may need a Google Flights lookup (SerpApi, saved for 24h) when Duffel doesn't sell it,
+      // unless the user entered a seat price (then it's the Main fare from the same search + seats).
+      if (settings.premiumSeatCentsPerPerson === null && g.every((i) => targets[i].level === "extra")) for (const i of g) all.add(`${i}|google`);
     }
   }
   return { min: first.size, max: all.size };

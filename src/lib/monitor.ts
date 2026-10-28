@@ -82,7 +82,7 @@ async function checkWhatWasPaid(
   try {
     if (booking.kind === "flight") {
       const targets = targetsFor(booking.details, settings!.paid, { isPaid: true, overridden: settings!.paidOverridden });
-      quote = await providers.flight.quote({ ...booking.details, targets }, ctx);
+      quote = await providers.flight.quote({ ...booking.details, targets, premiumSeatCentsPerPerson: settings!.premiumSeatCentsPerPerson }, ctx);
     } else {
       const hotelQuote = await providers.hotel.quote(booking.details, ctx);
       if (hotelQuote.propertyToken && hotelQuote.propertyToken !== booking.details.propertyToken) {
@@ -129,7 +129,10 @@ async function checkFareOptions(
     let quote: PriceQuote;
     try {
       const targets = targetsFor(booking.details, key, { isPaid: false, overridden: false });
-      quote = await provider.quote({ ...booking.details, targets }, { ...ctx, bookingKey: `${ctx.bookingKey}:${key}` });
+      quote = await provider.quote(
+        { ...booking.details, targets, premiumSeatCentsPerPerson: settings.premiumSeatCentsPerPerson },
+        { ...ctx, bookingKey: `${ctx.bookingKey}:${key}` },
+      );
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       await repo.recordPriceCheck(booking.id, provider.name, null, null, `Error: ${error.slice(0, 200)}`, key);

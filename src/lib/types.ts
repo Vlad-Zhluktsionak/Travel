@@ -26,6 +26,11 @@ export interface Itinerary {
   sliceFareBrands?: (string | null)[];
   /** Set only when pricing a specific fare option: what each slice must match (see lib/fares.ts). */
   targets?: import("./fares").SliceTarget[];
+  /**
+   * Set only when pricing: the user's Premium seat price per passenger per direction. Where no Premium fare is
+   * sold (Alaska sells Premium Class as a seat on a Main ticket), Premium = Main fare + this × passengers.
+   */
+  premiumSeatCentsPerPerson?: number | null;
 }
 
 export interface FlightDetails extends Itinerary {
@@ -45,6 +50,8 @@ export interface FareWatch {
   options: string[];
   /** Email when a ticked option costs at most this much more than what was paid (all passengers). */
   maxExtraCents: number;
+  /** Premium seat price per passenger per direction, typed in by the user (see Itinerary.premiumSeatCentsPerPerson). */
+  premiumSeatCentsPerPerson?: number | null;
 }
 
 export interface UpgradeWatch {

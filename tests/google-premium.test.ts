@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "../src/lib/db";
 import { isBasicFare, sliceSatisfies } from "../src/lib/fares";
 import { cachedGooglePremium } from "../src/lib/pricing";
-import { DuffelPriceProvider, type DuffelOffer } from "../src/lib/pricing/duffel";
+import { DuffelPriceProvider, mainPlusSeats, type DuffelOffer } from "../src/lib/pricing/duffel";
 import { findExactItinerary, GoogleFlightsLegPricer, type GoogleFlightsResponse } from "../src/lib/pricing/serpapi-flights";
 import type { Cabin, Itinerary } from "../src/lib/types";
 
@@ -190,6 +190,30 @@ describe("pricing the user's Alaska trip", () => {
     const q2 = await duffel.quote(pvr, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
     expect(q2.note).toContain("saved lookup");
     expect(googleCalls).toBe(1);
+  });
+
+  it("with a typed-in seat price, prices Premium as the Main fare + seats, with no Google searches", async () => {
+    const calls: string[] = [];
+    const fallback = cachedGooglePremium(new GoogleFlightsLegPricer("key", googleFetch(calls)), 24);
+    const duffel = new DuffelPriceProvider("tok", duffelFetch(calls), fallback);
+    const quote = await duffel.quote({ ...pvr, premiumSeatCentsPerPerson: 15_000 }, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
+    expect(quote).toEqual({
+      priceCents: 84_550 + 2 * 15_000 + 140_000, // Main (not Saver) + $150 seat × 2 passengers, + First back
+      currency: "USD",
+      note: "Premium out (Main fare + your Premium seat price) · First back — 2 one-way fares added together",
+    });
+    expect(calls.some((c) => c.startsWith("google"))).toBe(false);
+  });
+
+  it("adds the seat price for every passenger on both directions of a Premium round trip", () => {
+    const rt = (id: string, amount: string, brand: string): DuffelOffer => {
+      const out = oneWay(id, amount, "SEA", "PVR", "2031-01-15", "1360", "economy", brand);
+      const back = oneWay(id, amount, "PVR", "SEA", "2031-01-22", "1361", "economy", brand);
+      return { ...out, slices: [out.slices[0], back.slices[0]] };
+    };
+    const offer = mainPlusSeats([rt("saver", "1400.00", "Saver"), rt("main", "1600.00", "Main")], pvr, 10_000, "USD");
+    expect(offer?.total_amount).toBe("2000.00"); // $1,600 + $100 × 2 passengers × 2 directions
+    expect(mainPlusSeats([rt("saver", "1400.00", "Saver")], pvr, 10_000, "USD")).toBeNull(); // never on top of basic
   });
 
   it("turns Duffel errors into a short readable message", async () => {

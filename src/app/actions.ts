@@ -95,12 +95,17 @@ export async function updateFareWatch(form: FormData) {
   const options = form.getAll("options").map(String).filter((k) => valid.has(k) && k !== paid);
   const dollars = Number(form.get("maxExtra"));
   const maxExtraCents = Number.isFinite(dollars) && dollars >= 0 && dollars <= 100_000 ? Math.round(dollars * 100) : before.maxExtraCents;
+  // Blank clears the seat price.
+  const seatInput = String(form.get("premiumSeat") ?? "").trim();
+  const seatDollars = Number(seatInput);
+  const premiumSeatCentsPerPerson =
+    seatInput === "" ? null : Number.isFinite(seatDollars) && seatDollars >= 0 && seatDollars <= 10_000 ? Math.round(seatDollars * 100) : before.premiumSeatCentsPerPerson;
 
   const details = {
     ...d,
     upgradeWatch: null, // superseded by fareWatch
     // Only store the correction if it differs from what the email says.
-    fareWatch: { paid: paid === detectedPaidKey(d) ? null : paid, options, maxExtraCents },
+    fareWatch: { paid: paid === detectedPaidKey(d) ? null : paid, options, maxExtraCents, premiumSeatCentsPerPerson },
   };
   await repo.updateBookingDetails(booking.id, details);
 
@@ -109,7 +114,8 @@ export async function updateFareWatch(form: FormData) {
   if (paidChanged) await repo.resetPriceHistory(booking.id);
   // Price newly ticked options (or the corrected fare) right away instead of waiting for the schedule.
   const added = options.some((k) => !before.options.includes(k));
-  if ((paidChanged || added) && booking.status === "active") {
+  const seatChanged = premiumSeatCentsPerPerson !== before.premiumSeatCentsPerPerson;
+  if ((paidChanged || added || seatChanged) && booking.status === "active") {
     await checkBooking({ ...booking, details, lastCheckedAt: null }, { force: true });
   }
   revalidatePath(`/trips/${booking.id}`);

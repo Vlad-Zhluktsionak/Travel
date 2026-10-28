@@ -139,6 +139,24 @@ export function cheapestMatchingOffer(offers: DuffelOffer[], it: Itinerary): Duf
   return best;
 }
 
+const MAIN_TARGET: SliceTarget = { level: "main", exactBrand: null, searchCabins: ["economy"] };
+
+/**
+ * Premium priced as the cheapest Main fare (never basic, e.g. not Alaska Saver) on the same flights plus the
+ * user's seat price for every passenger on every direction.
+ */
+export function mainPlusSeats(offers: DuffelOffer[], it: Itinerary, seatCentsPerPerson: number, currency?: string): DuffelOffer | null {
+  const main = cheapestMatchingOffer(offers, { ...it, targets: it.slices.map(() => MAIN_TARGET) });
+  if (!main || (currency && main.total_currency !== currency)) return null;
+  const seats = seatCentsPerPerson * it.passengerCount * it.slices.length;
+  return {
+    id: `${main.id}+seats`,
+    total_amount: ((Math.round(Number(main.total_amount) * 100) + seats) / 100).toFixed(2),
+    total_currency: main.total_currency,
+    slices: main.slices.map((s) => ({ ...s, fare_brand_name: `${s.fare_brand_name ?? "Main"} fare + your Premium seat price` })),
+  };
+}
+
 /** Live fares from the Duffel Flights API (https://duffel.com/docs/api/offer-requests). */
 export class DuffelPriceProvider implements FlightPriceProvider {
   readonly name = "duffel";
@@ -209,15 +227,23 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       sameFlightOffers.push(...offers.filter((o) => sameFlights(o, sub)));
     }
     let seen = describeOffered(sameFlightOffers);
+    if (!sliceIdx.every((i) => targets[i].level === "extra")) return { offer: null, seen };
 
     // No Premium fare sold through Duffel (e.g. Alaska Premium Class, which Alaska sells as a seat on a
-    // Main ticket): look each direction up on Google Flights instead, if configured.
-    if (this.premiumFallback && sliceIdx.every((i) => targets[i].level === "extra")) {
+    // Main ticket). With the user's seat price: Main fare from the same search + seats, no extra searches.
+    const seat = it.premiumSeatCentsPerPerson;
+    if (seat !== null && seat !== undefined) {
+      const offer = mainPlusSeats(sameFlightOffers, sub, seat, ctx?.currency);
+      if (offer) return { offer, seen: "" };
+      return { offer: null, seen: `${seen} No Main fare to add your Premium seat price to.` };
+    }
+    // Otherwise look each direction up on Google Flights, if configured.
+    if (this.premiumFallback) {
       const google = await this.premiumViaFallback(it, sliceIdx, ctx);
       if ("offer" in google) return { offer: google.offer, seen: "" };
       seen = `${seen} Google Flights: ${google.problem}`;
     }
-    return { offer: null, seen };
+    return { offer: null, seen: `${seen} Tip: enter your Premium seat price under "Fares to watch" to price it as Main fare + seat.` };
   }
 
   /** Price each direction in the group one way via the fallback and combine them into one offer. */
