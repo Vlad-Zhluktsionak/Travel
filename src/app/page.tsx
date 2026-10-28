@@ -11,6 +11,7 @@ import { currentUser } from "@/lib/session";
 import type { Booking, PriceCheck, User } from "@/lib/types";
 import { disconnectMailbox, syncMailbox, updateThreshold } from "./actions";
 import { LoginForm, PasteForm } from "./forms";
+import { SubmitButton } from "./submit-button";
 
 export const dynamic = "force-dynamic";
 
@@ -108,8 +109,8 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
                 <div key={c.id} className="row">
                   <span className="badge good">{mailboxProviders[c.provider].label}</span>
                   <span className="small">{c.accountEmail}</span>
-                  <form action={syncMailbox}><input type="hidden" name="connectionId" value={c.id} /><button className="secondary" type="submit">Scan now</button></form>
-                  <form action={disconnectMailbox}><input type="hidden" name="connectionId" value={c.id} /><button className="danger" type="submit">Disconnect</button></form>
+                  <form action={syncMailbox}><input type="hidden" name="connectionId" value={c.id} /><SubmitButton className="secondary" pending="Scanning…" done="✓ Scanned">Scan now</SubmitButton></form>
+                  <form action={disconnectMailbox}><input type="hidden" name="connectionId" value={c.id} /><SubmitButton className="danger" pending="Disconnecting…" confirm="Disconnect this mailbox?">Disconnect</SubmitButton></form>
                 </div>
               ))}
               <div className="row">
@@ -126,7 +127,7 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
           <form action={updateThreshold} className="row">
             <label htmlFor="threshold">Email me when I can save at least $</label>
             <input id="threshold" type="number" name="threshold" min={0} step={1} defaultValue={user.alertThresholdCents / 100} style={{ width: 100 }} />
-            <button className="secondary" type="submit">Save</button>
+            <SubmitButton className="secondary" pending="Saving…" done="✓ Saved">Save</SubmitButton>
           </form>
           <p className="muted small">Flight prices are checked about every 6 hours, hotel prices about every 12 hours.</p>
         </section>

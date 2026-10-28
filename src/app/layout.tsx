@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { logout } from "./actions";
 import { currentUser } from "@/lib/session";
+import { SubmitButton } from "./submit-button";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,7 +22,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             {user && (
               <form action={logout} className="row">
                 <span className="muted small">{user.email}</span>
-                <button className="secondary" type="submit">Sign out</button>
+                <SubmitButton className="secondary" pending="Signing out…">Sign out</SubmitButton>
               </form>
             )}
           </header>

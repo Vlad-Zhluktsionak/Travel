@@ -12,6 +12,7 @@ import { requireUser } from "@/lib/session";
 import type { FlightBooking, HotelBooking, PriceCheck } from "@/lib/types";
 import { checkNow, removeBooking, setTracking, updateFareWatch } from "../../actions";
 import { PriceChart, type ChartPoint } from "./price-chart";
+import { SubmitButton } from "../../submit-button";
 
 export const dynamic = "force-dynamic";
 
@@ -81,13 +82,13 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
           </span>
           <div className="row">
             {booking.status === "active" && (
-              <form action={checkNow}><input type="hidden" name="bookingId" value={booking.id} /><button className="secondary" type="submit">Check price now</button></form>
+              <form action={checkNow}><input type="hidden" name="bookingId" value={booking.id} /><SubmitButton className="secondary" pending="Checking price… (up to 30s)" done="✓ Checked">Check price now</SubmitButton></form>
             )}
             {booking.status !== "departed" && (
               <form action={setTracking}>
                 <input type="hidden" name="bookingId" value={booking.id} />
                 <input type="hidden" name="active" value={booking.status === "active" ? "0" : "1"} />
-                <button className="secondary" type="submit">{booking.status === "active" ? "Pause tracking" : "Resume tracking"}</button>
+                <SubmitButton className="secondary" pending={booking.status === "active" ? "Pausing…" : "Resuming…"} done="✓ Done">{booking.status === "active" ? "Pause tracking" : "Resume tracking"}</SubmitButton>
               </form>
             )}
           </div>
@@ -116,7 +117,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
 
       <form action={removeBooking}>
         <input type="hidden" name="bookingId" value={booking.id} />
-        <button className="danger" type="submit">Stop tracking &amp; delete trip</button>
+        <SubmitButton className="danger" pending="Deleting…" confirm="Stop tracking and delete this trip and its price history?">Stop tracking &amp; delete trip</SubmitButton>
       </form>
     </>
   );
@@ -222,7 +223,7 @@ function FareWatchCard({ booking, options, latest }: { booking: FlightBooking; o
           <span className="muted small">more than I paid (all passengers)</span>
         </div>
         <div className="row">
-          <button type="submit">Save</button>
+          <SubmitButton pending="Saving & checking prices…" done="✓ Saved">Save</SubmitButton>
           <span className="muted small">
             {plan.min === plan.max ? plan.min : `${plan.min}–${plan.max}`} search{plan.max === 1 ? "" : "es"} per check
             {plan.max > plan.min ? " (the higher number only when a fallback cabin is needed)" : ""}

@@ -147,3 +147,13 @@ table.segments td, table.segments th { padding: 8px 6px; border-bottom: 1px soli
 .fare-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
 .fare-option input { width: 18px; height: 18px; accent-color: var(--accent); }
 select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+
+/* Button feedback while a server action runs */
+button[aria-busy="true"] { cursor: progress; opacity: 0.85; }
+button.is-done { border-color: var(--good); background: var(--good-bg); color: var(--good); }
+.spinner {
+  width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex: none;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
