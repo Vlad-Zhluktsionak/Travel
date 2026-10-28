@@ -5,7 +5,8 @@ import { formatDate, formatLocal, formatMoney } from "@/lib/format";
 import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
 import type { UpgradeSummary } from "@/lib/repo";
-import { UPGRADE_LABELS } from "@/lib/monitor";
+import { fareWatchSettings, optionLabel } from "@/lib/fares";
+import { extraText } from "@/lib/monitor";
 import { currentUser } from "@/lib/session";
 import type { Booking, PriceCheck, User } from "@/lib/types";
 import { disconnectMailbox, syncMailbox, updateThreshold } from "./actions";
@@ -54,7 +55,7 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
   const upgrades = new Map(
     await Promise.all(
       bookings
-        .filter((b) => b.kind === "flight" && b.details.upgradeWatch?.enabled)
+        .filter((b) => b.kind === "flight" && fareWatchSettings(b.details).options.length > 1)
         .map(async (b) => [b.id, await repo.upgradeSummaries(b.id)] as const),
     ),
   );
@@ -143,11 +144,12 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
 
 function TripRow({ booking, latest, upgrades }: { booking: Booking; latest: PriceCheck | null; upgrades: UpgradeSummary[] }) {
   // Cheapest watched upgrade that's within the trip's limit, if any.
-  const limit = booking.kind === "flight" ? booking.details.upgradeWatch?.maxExtraCents : undefined;
+  const settings = booking.kind === "flight" ? fareWatchSettings(booking.details) : null;
+  const limit = settings?.maxExtraCents;
   const deal = limit === undefined
     ? undefined
     : upgrades
-        .filter((u) => u.latest.priceCents !== null && u.latest.currency === booking.currency && u.latest.priceCents - booking.paidCents <= limit)
+        .filter((u) => settings!.options.includes(u.cabin) && u.latest.priceCents !== null && u.latest.currency === booking.currency && u.latest.priceCents - booking.paidCents <= limit)
         .sort((a, b) => a.latest.priceCents! - b.latest.priceCents!)[0];
   const comparable = latest && latest.currency === booking.currency ? latest.priceCents! : null;
   const savings = comparable !== null ? booking.paidCents - comparable : null;
@@ -193,7 +195,7 @@ function TripRow({ booking, latest, upgrades }: { booking: Booking; latest: Pric
           ))}
         {deal && booking.status === "active" && (
           <span className="badge good" style={{ marginLeft: 4 }}>
-            ⬆️ {UPGRADE_LABELS[deal.cabin]} {deal.latest.priceCents! <= booking.paidCents ? "at no extra cost" : `+${formatMoney(deal.latest.priceCents! - booking.paidCents, booking.currency)}`}
+            ⬆️ {optionLabel(deal.cabin)} {extraText(deal.latest.priceCents! - booking.paidCents, booking.currency)}
           </span>
         )}
       </div>

@@ -7,6 +7,7 @@ import { syncConnection } from "@/lib/email/sync";
 import { htmlToText } from "@/lib/email/normalize";
 import { ExtractionError } from "@/lib/extract";
 import { describeBooking, ingestEmail } from "@/lib/ingest";
+import { allOptions, detectedPaidKey, fareWatchSettings } from "@/lib/fares";
 import { checkBooking } from "@/lib/monitor";
 import { sendEmail } from "@/lib/notify";
 import * as repo from "@/lib/repo";
@@ -80,21 +81,36 @@ export async function checkNow(form: FormData) {
   revalidatePath("/");
 }
 
-export async function updateUpgradeWatch(form: FormData) {
+export async function updateFareWatch(form: FormData) {
   const user = await requireUser();
   const booking = await repo.getBooking(Number(form.get("bookingId")), user.id);
   if (!booking || booking.kind !== "flight") return;
+  const d = booking.details;
+  const before = fareWatchSettings(d);
+  const n = d.slices.length;
+  const valid = new Set(allOptions(n));
+
+  const paidInput = String(form.get("paid") ?? "");
+  const paid = valid.has(paidInput) ? paidInput : before.paid;
+  const options = form.getAll("options").map(String).filter((k) => valid.has(k) && k !== paid);
   const dollars = Number(form.get("maxExtra"));
-  const maxExtraCents =
-    Number.isFinite(dollars) && dollars >= 0 && dollars <= 100_000
-      ? Math.round(dollars * 100)
-      : (booking.details.upgradeWatch?.maxExtraCents ?? 20_000);
-  const enabled = form.get("enabled") === "1";
-  const details = { ...booking.details, upgradeWatch: { enabled, maxExtraCents } };
+  const maxExtraCents = Number.isFinite(dollars) && dollars >= 0 && dollars <= 100_000 ? Math.round(dollars * 100) : before.maxExtraCents;
+
+  const details = {
+    ...d,
+    upgradeWatch: null, // superseded by fareWatch
+    // Only store the correction if it differs from what the email says.
+    fareWatch: { paid: paid === detectedPaidKey(d) ? null : paid, options, maxExtraCents },
+  };
   await repo.updateBookingDetails(booking.id, details);
-  // Turning it on prices the higher cabins right away instead of waiting for the next scheduled run.
-  if (enabled && !booking.details.upgradeWatch?.enabled && booking.status === "active") {
-    await checkBooking({ ...booking, details }, { force: true });
+
+  // A different "what I paid" means the old price history was for another fare: start fresh.
+  const paidChanged = paid !== before.paid;
+  if (paidChanged) await repo.resetPriceHistory(booking.id);
+  // Price newly ticked options (or the corrected fare) right away instead of waiting for the schedule.
+  const added = options.some((k) => !before.options.includes(k));
+  if ((paidChanged || added) && booking.status === "active") {
+    await checkBooking({ ...booking, details, lastCheckedAt: null }, { force: true });
   }
   revalidatePath(`/trips/${booking.id}`);
   revalidatePath("/");

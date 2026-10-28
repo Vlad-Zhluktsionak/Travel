@@ -3,7 +3,7 @@ import type { Row } from "@libsql/client";
 import { all, get, run } from "./db";
 import { config } from "./config";
 import { sliceCabins } from "./cabins";
-import type { Alert, Booking, FlightDetails, ParsedBooking, PriceCheck, UpgradeCabin, User } from "./types";
+import type { Alert, Booking, FlightDetails, ParsedBooking, PriceCheck, User } from "./types";
 
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
@@ -202,6 +202,9 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
     const merged = details as { propertyToken?: string | null; upgradeWatch?: unknown };
     if (parsed.kind === "hotel") merged.propertyToken ??= previous.propertyToken ?? null;
     if (parsed.kind === "flight" && previous.upgradeWatch) merged.upgradeWatch ??= previous.upgradeWatch;
+    if (parsed.kind === "flight" && (previous as { fareWatch?: unknown }).fareWatch) {
+      (merged as { fareWatch?: unknown }).fareWatch ??= (previous as { fareWatch?: unknown }).fareWatch;
+    }
   }
   // If the cabins or fares changed (e.g. a corrected re-import), the old prices were for a different
   // product: drop them so the chart and alerts start fresh.
@@ -215,11 +218,7 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
       "UPDATE bookings SET paid_cents = ?, currency = ?, starts_on = ?, details = ?, status = 'active' WHERE id = ?",
       [...values, id],
     );
-    if (resetHistory) {
-      await run("DELETE FROM price_checks WHERE booking_id = ?", [id]);
-      await run("DELETE FROM alerts WHERE booking_id = ?", [id]);
-      await run("UPDATE bookings SET last_checked_at = NULL WHERE id = ?", [id]);
-    }
+    if (resetHistory) await resetPriceHistory(id);
   } else {
     const result = await run(
       `INSERT INTO bookings (user_id, kind, confirmation_code, paid_cents, currency, starts_on, details, source)
@@ -229,6 +228,13 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
     id = result.lastInsertRowid;
   }
   return { booking: (await getBooking(id))!, created: !existing };
+}
+
+/** Drop a booking's price history and alerts, e.g. after correcting what was paid. */
+export async function resetPriceHistory(id: number) {
+  await run("DELETE FROM price_checks WHERE booking_id = ?", [id]);
+  await run("DELETE FROM alerts WHERE booking_id = ?", [id]);
+  await run("UPDATE bookings SET last_checked_at = NULL WHERE id = ?", [id]);
 }
 
 export async function updateBookingDetails(id: number, details: Booking["details"]) {
@@ -251,7 +257,7 @@ export async function deleteBooking(id: number, userId: number) {
 // ---------- price checks & alerts ----------
 // `cabin` NULL = the cabin that was booked; otherwise an upgrade cabin being watched.
 
-const asCabin = (v: unknown) => (v === null || v === undefined ? null : (String(v) as UpgradeCabin));
+const asCabin = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
 function toCheck(row: Row): PriceCheck {
   return {
@@ -272,7 +278,7 @@ export async function recordPriceCheck(
   priceCents: number | null,
   currency: string | null,
   note: string | null,
-  cabin: UpgradeCabin | null = null,
+  cabin: string | null = null,
 ): Promise<PriceCheck> {
   const result = await run(
     "INSERT INTO price_checks (booking_id, provider, price_cents, currency, note, cabin) VALUES (?, ?, ?, ?, ?, ?)",
@@ -299,14 +305,15 @@ export async function latestPriceCheck(bookingId: number): Promise<PriceCheck | 
   return row ? toCheck(row) : null;
 }
 
+/** Latest check and lowest price for one watched fare option (stored in the `cabin` column). */
 export interface UpgradeSummary {
-  cabin: UpgradeCabin;
+  cabin: string;
   /** Most recent check for this cabin (its price may be null = not offered). */
   latest: PriceCheck;
   lowestCents: number | null;
 }
 
-/** Latest check and lowest price seen for each watched upgrade cabin. */
+/** Latest check and lowest price seen for each watched fare option (other than what was paid). */
 export async function upgradeSummaries(bookingId: number): Promise<UpgradeSummary[]> {
   const rows = await all(
     `SELECT p.*, (SELECT MIN(price_cents) FROM price_checks q WHERE q.booking_id = p.booking_id AND q.cabin = p.cabin) AS lowest
@@ -340,7 +347,7 @@ export async function createAlert(
   paidCents: number,
   foundCents: number,
   currency: string,
-  cabin: UpgradeCabin | null = null,
+  cabin: string | null = null,
 ): Promise<Alert> {
   const result = await run(
     "INSERT INTO alerts (booking_id, paid_cents, found_cents, currency, cabin) VALUES (?, ?, ?, ?, ?)",
@@ -357,7 +364,7 @@ export async function listAlerts(bookingId: number): Promise<Alert[]> {
  * Lowest price we've already alerted on (for this cabin, at the current paid price), so we only
  * re-alert on a further drop.
  */
-export async function lowestAlertedCents(bookingId: number, paidCents: number, cabin: UpgradeCabin | null = null): Promise<number | null> {
+export async function lowestAlertedCents(bookingId: number, paidCents: number, cabin: string | null = null): Promise<number | null> {
   const row = await get(
     "SELECT MIN(found_cents) AS m FROM alerts WHERE booking_id = ? AND paid_cents = ? AND cabin IS ?",
     [bookingId, paidCents, cabin],

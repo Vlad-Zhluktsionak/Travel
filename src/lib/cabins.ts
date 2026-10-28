@@ -1,4 +1,4 @@
-import type { Cabin, Itinerary, UpgradeCabin } from "./types";
+import type { Cabin, Itinerary } from "./types";
 
 export const CABIN_RANK: Record<Cabin, number> = { economy: 0, premium_economy: 1, business: 2, first: 3 };
 
@@ -28,22 +28,4 @@ export function describeCabins(it: Pick<Itinerary, "slices" | "cabin" | "sliceCa
   if (!isMixedCabin(it)) return CABIN_LABELS[cabins[0]];
   if (cabins.length === 2) return `${CABIN_LABELS[cabins[0]]} out · ${CABIN_LABELS[cabins[1]]} back`;
   return cabins.map((c, i) => `Leg ${i + 1}: ${CABIN_LABELS[c]}`).join(" · ");
-}
-
-/**
- * The same itinerary with every slice raised to at least `target` (never lowered), e.g. upgrading a
- * "premium out, first back" trip to business keeps first on the way back.
- */
-export function raiseCabins<T extends Itinerary>(it: T, target: Cabin): T {
-  const cabins = sliceCabins(it).map((c) => (CABIN_RANK[c] >= CABIN_RANK[target] ? c : target));
-  return { ...it, cabin: cabins[0], sliceCabins: cabins };
-}
-
-/** Upgrade cabins worth watching: those that would raise at least one slice. */
-export function upgradeCabinsFor(it: Pick<Itinerary, "slices" | "cabin" | "sliceCabins">): UpgradeCabin[] {
-  const lowest = CABIN_RANK[lowestCabin(it)];
-  const out: UpgradeCabin[] = [];
-  if (lowest < CABIN_RANK.premium_economy) out.push("premium_economy");
-  if (lowest < CABIN_RANK.business) out.push("business_first");
-  return out;
 }

@@ -24,14 +24,27 @@ export interface Itinerary {
   fareBrand: string | null;
   /** Fare brand booked on each slice (e.g. "Premium Class", "First"); null where the email doesn't say. */
   sliceFareBrands?: (string | null)[];
+  /** Set only when pricing a specific fare option: what each slice must match (see lib/fares.ts). */
+  targets?: import("./fares").SliceTarget[];
 }
 
 export interface FlightDetails extends Itinerary {
   airline: string | null;
   bookingSite: string | null;
   passengerNames: string[];
-  /** Per-trip opt-in to also price the same flights in higher cabins. */
+  /** Legacy (before "fares to watch"): opt-in to price higher cabins. Converted by fareWatchSettings(). */
   upgradeWatch?: UpgradeWatch | null;
+  /** Which fare options to price for this trip (see lib/fares.ts). Missing = only what was paid. */
+  fareWatch?: FareWatch | null;
+}
+
+export interface FareWatch {
+  /** User's correction of what they paid, as an option key ("main+top"); null = use what the email says. */
+  paid?: string | null;
+  /** Extra option keys to price besides what was paid. */
+  options: string[];
+  /** Email when a ticked option costs at most this much more than what was paid (all passengers). */
+  maxExtraCents: number;
 }
 
 export interface UpgradeWatch {
@@ -40,8 +53,6 @@ export interface UpgradeWatch {
   maxExtraCents: number;
 }
 
-/** Higher cabins we can watch. "business_first" = business, falling back to first. */
-export type UpgradeCabin = "premium_economy" | "business_first";
 
 export type HotelChain = "marriott" | "hilton" | "hyatt" | "ihg" | "other";
 
@@ -98,8 +109,8 @@ export interface PriceCheck {
   priceCents: number | null;
   currency: string | null;
   note: string | null;
-  /** null = the booked cabin; otherwise the upgrade cabin this check priced. */
-  cabin: UpgradeCabin | null;
+  /** null = what was paid; otherwise the fare option key this check priced (e.g. "extra+top"). */
+  cabin: string | null;
 }
 
 export interface Alert {
@@ -109,8 +120,8 @@ export interface Alert {
   paidCents: number;
   foundCents: number;
   currency: string;
-  /** null = a price drop on the booked cabin; otherwise an upgrade alert for this cabin. */
-  cabin: UpgradeCabin | null;
+  /** null = a price drop on what was paid; otherwise an alert for this fare option key. */
+  cabin: string | null;
 }
 
 export interface User {

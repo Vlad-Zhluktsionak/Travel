@@ -142,3 +142,8 @@ table.segments td, table.segments th { padding: 8px 6px; border-bottom: 1px soli
   .trip { grid-template-columns: 1fr; }
   .price { text-align: left; }
 }
+
+.fare-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 16px; margin-top: 4px; }
+.fare-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.fare-option input { width: 18px; height: 18px; accent-color: var(--accent); }
+select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }

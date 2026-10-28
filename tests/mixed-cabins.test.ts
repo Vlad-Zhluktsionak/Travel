@@ -57,10 +57,11 @@ describe("like-for-like offers", () => {
     expect(cheapestMatchingOffer(offers, oneWayOut)?.total_amount).toBe("520.00");
   });
 
-  it("rejects offers with a lower cabin on any leg even without a fare name", () => {
+  it("without a fare name, only a fare of the same level counts (not a lower or higher one)", () => {
     const noBrand = { ...oneWayOut, sliceFareBrands: [null] };
-    expect(cheapestMatchingOffer([outbound("300.00", "economy", "")], noBrand)).toBeNull();
-    expect(cheapestMatchingOffer([outbound("700.00", "first", "")], noBrand)?.total_amount).toBe("700.00");
+    expect(cheapestMatchingOffer([outbound("300.00", "economy", "")], noBrand)).toBeNull(); // lower: plain economy
+    expect(cheapestMatchingOffer([outbound("700.00", "first", "")], noBrand)).toBeNull(); // higher: a different product
+    expect(cheapestMatchingOffer([outbound("520.00", "premium_economy", "")], noBrand)?.total_amount).toBe("520.00");
   });
 });
 

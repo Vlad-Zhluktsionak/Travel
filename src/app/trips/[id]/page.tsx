@@ -2,14 +2,15 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { hotelAdvice, rebookAdvice } from "@/lib/advice";
 import { formatDate, formatLocal, formatMoney, formatTimestamp } from "@/lib/format";
-import { CABIN_LABELS, describeCabins, isMixedCabin, lowestCabin, sliceCabins, upgradeCabinsFor } from "@/lib/cabins";
-import { describeTrip, UPGRADE_LABELS } from "@/lib/monitor";
+import { CABIN_LABELS, describeCabins, isMixedCabin, sliceCabins } from "@/lib/cabins";
+import { allOptions, detectedPaidKey, fareWatchSettings, optionLabel, searchPlan } from "@/lib/fares";
+import { describeTrip, extraText } from "@/lib/monitor";
 import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
 import type { UpgradeSummary } from "@/lib/repo";
 import { requireUser } from "@/lib/session";
 import type { FlightBooking, HotelBooking, PriceCheck } from "@/lib/types";
-import { checkNow, removeBooking, setTracking, updateUpgradeWatch } from "../../actions";
+import { checkNow, removeBooking, setTracking, updateFareWatch } from "../../actions";
 import { PriceChart, type ChartPoint } from "./price-chart";
 
 export const dynamic = "force-dynamic";
@@ -93,7 +94,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         </div>
       </section>
 
-      {booking.kind === "flight" && <UpgradeCard booking={booking} upgrades={upgrades} />}
+      {booking.kind === "flight" && <FareWatchCard booking={booking} options={upgrades} latest={latest} />}
 
       {booking.kind === "hotel" ? <HotelDetailsCard booking={booking} /> : <FlightDetailsCard booking={booking} />}
 
@@ -105,7 +106,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
               <li key={a.id}>
                 {formatTimestamp(a.createdAt)}:{" "}
                 {a.cabin
-                  ? `⬆️ ${UPGRADE_LABELS[a.cabin]} for ${formatMoney(a.foundCents, a.currency)} (${a.foundCents <= a.paidCents ? "no extra cost" : `+${formatMoney(a.foundCents - a.paidCents, a.currency)}`})`
+                  ? `⬆️ ${optionLabel(a.cabin)} for ${formatMoney(a.foundCents, a.currency)} (${extraText(a.foundCents - a.paidCents, a.currency)})`
                   : `${formatMoney(a.foundCents, a.currency)} (save ${formatMoney(a.paidCents - a.foundCents, a.currency)})`}
               </li>
             ))}
@@ -160,64 +161,96 @@ function HotelDetailsCard({ booking }: { booking: HotelBooking }) {
   );
 }
 
-function UpgradeCard({ booking, upgrades }: { booking: FlightBooking; upgrades: UpgradeSummary[] }) {
-  const cabins = upgradeCabinsFor(booking.details);
-  const watch = booking.details.upgradeWatch;
-  const enabled = Boolean(watch?.enabled);
-  const maxExtra = (watch?.maxExtraCents ?? 20_000) / 100;
-  if (cabins.length === 0) {
+function FareWatchCard({ booking, options, latest }: { booking: FlightBooking; options: UpgradeSummary[]; latest: PriceCheck | null }) {
+  const d = booking.details;
+  const settings = fareWatchSettings(d);
+  const choices = allOptions(d.slices.length);
+  const detected = detectedPaidKey(d);
+  const plan = searchPlan(d, settings);
+  const roundTrip = d.slices.length === 2;
+  const uniform = choices.slice(0, 3);
+  const mixed = choices.slice(3);
+
+  const priceOf = (key: string) => {
+    if (key === settings.paid) return latest && latest.currency === booking.currency ? { check: latest, cents: latest.priceCents } : null;
+    const s = options.find((o) => o.cabin === key);
+    return s ? { check: s.latest, cents: s.latest.currency === booking.currency ? s.latest.priceCents : null, lowest: s.lowestCents } : null;
+  };
+
+  const box = (key: string) => {
+    const isPaid = key === settings.paid;
     return (
-      <section className="card">
-        <h2>⬆️ Upgrades</h2>
-        <p className="muted small">Every leg is already {CABIN_LABELS[lowestCabin(booking.details)].toLowerCase()} or better, the top cabins we track, so there&apos;s nothing to upgrade to.</p>
-      </section>
+      <label key={key} className="fare-option">
+        <input type="checkbox" name="options" value={key} defaultChecked={isPaid || settings.options.includes(key)} disabled={isPaid} />
+        <span>{optionLabel(key)}</span>
+        {isPaid && <span className="badge good">what I paid</span>}
+      </label>
     );
-  }
+  };
+
   return (
     <section className="card">
-      <h2>⬆️ Upgrades</h2>
+      <h2>🎫 Fares to watch</h2>
       <p className="muted small">
-        Also price these same flights in {cabins.map((c) => UPGRADE_LABELS[c].toLowerCase()).join(" and ")}, and email me when an upgrade costs at most my limit more than what I paid ({formatMoney(booking.paidCents, booking.currency)} for {booking.details.passengerCount} passenger(s)).
+        Tick the fares to price for these exact flights. Only ticked fares are searched. Price drops are measured against what you paid;
+        for the other fares you get an email when one costs at most your limit more.
       </p>
-      <form action={updateUpgradeWatch} className="row">
+      <form action={updateFareWatch} className="stack">
         <input type="hidden" name="bookingId" value={booking.id} />
-        <input type="hidden" name="enabled" value={enabled ? "1" : "0"} />
-        <label htmlFor="maxExtra">Email me when an upgrade costs at most $</label>
-        <input id="maxExtra" type="number" name="maxExtra" min={0} step={1} defaultValue={maxExtra} style={{ width: 100 }} />
-        <span className="muted small">more in total</span>
-        <button className="secondary" type="submit">Save limit</button>
+        <div className="row">
+          <label htmlFor="paid"><b>What I paid</b></label>
+          <select id="paid" name="paid" defaultValue={settings.paid}>
+            {choices.map((k) => (
+              <option key={k} value={k}>{optionLabel(k)}{k === detected ? " (from your email)" : ""}</option>
+            ))}
+          </select>
+          <span className="muted small">Fix this if it&apos;s wrong; changing it restarts the price history.</span>
+        </div>
+        <div>
+          <div className="muted small">{roundTrip ? "Round trip" : d.slices.length === 1 ? "One way" : "All legs"}</div>
+          <div className="fare-options">{uniform.map(box)}</div>
+        </div>
+        {mixed.length > 0 && (
+          <div>
+            <div className="muted small">Mixed cabins (priced as two one-way fares added together)</div>
+            <div className="fare-options">{mixed.map(box)}</div>
+          </div>
+        )}
+        <div className="row">
+          <label htmlFor="maxExtra">Email me when a ticked fare costs at most $</label>
+          <input id="maxExtra" type="number" name="maxExtra" min={0} step={1} defaultValue={settings.maxExtraCents / 100} style={{ width: 100 }} />
+          <span className="muted small">more than I paid (all passengers)</span>
+        </div>
+        <div className="row">
+          <button type="submit">Save</button>
+          <span className="muted small">
+            {plan.min === plan.max ? plan.min : `${plan.min}–${plan.max}`} search{plan.max === 1 ? "" : "es"} per check
+            {plan.max > plan.min ? " (the higher number only when a fallback cabin is needed)" : ""}
+          </span>
+        </div>
       </form>
-      <form action={updateUpgradeWatch} style={{ marginTop: 10 }}>
-        <input type="hidden" name="bookingId" value={booking.id} />
-        <input type="hidden" name="maxExtra" value={maxExtra} />
-        <input type="hidden" name="enabled" value={enabled ? "0" : "1"} />
-        <button type="submit" className={enabled ? "secondary" : undefined}>{enabled ? "Stop watching upgrades" : "Watch upgrades"}</button>
-        {enabled && <span className="badge good" style={{ marginLeft: 8 }}>Watching</span>}
-      </form>
-      {cabins.some((c) => upgrades.find((u) => u.cabin === c)) && (
-        <table className="segments" style={{ marginTop: 12 }}>
-          <thead><tr><th>Cabin</th><th>Price now</th><th>vs. what you paid</th><th>Lowest seen</th><th>Checked</th></tr></thead>
-          <tbody>
-            {cabins.map((cabin) => {
-              const u = upgrades.find((x) => x.cabin === cabin);
-              if (!u) return <tr key={cabin}><td>{UPGRADE_LABELS[cabin]}</td><td colSpan={4} className="muted">Not checked yet</td></tr>;
-              const price = u.latest.currency === booking.currency ? u.latest.priceCents : null;
-              const extra = price === null ? null : price - booking.paidCents;
-              const within = extra !== null && watch && extra <= watch.maxExtraCents;
-              return (
-                <tr key={cabin}>
-                  <td>{UPGRADE_LABELS[cabin]}{u.latest.note && price !== null ? <div className="muted small">{u.latest.note}</div> : null}</td>
-                  <td>{price === null ? <span className="muted">{u.latest.note ?? "Not offered"}</span> : <b>{formatMoney(price, booking.currency)}</b>}</td>
-                  <td>{extra === null ? "—" : <span className={within ? "badge good" : undefined}>{extra <= 0 ? `${formatMoney(-extra, booking.currency)} less` : `+${formatMoney(extra, booking.currency)}`}</span>}</td>
-                  <td>{u.lowestCents === null ? "—" : formatMoney(u.lowestCents, booking.currency)}</td>
-                  <td className="muted small">{formatTimestamp(u.latest.checkedAt)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-      {enabled && <p className="muted small">Each check uses up to {cabins.length + 1} extra Duffel searches (business falls back to first when an airline sells its top cabin as first).</p>}
+
+      <table className="segments" style={{ marginTop: 12 }}>
+        <thead><tr><th>Fare</th><th>Price now</th><th>vs. what you paid</th><th>Lowest seen</th><th>Checked</th></tr></thead>
+        <tbody>
+          {settings.options.map((key) => {
+            const p = priceOf(key);
+            const isPaid = key === settings.paid;
+            if (!p) return <tr key={key}><td>{optionLabel(key)}</td><td colSpan={4} className="muted">Not checked yet</td></tr>;
+            const diff = p.cents === null ? null : p.cents - booking.paidCents;
+            const within = !isPaid && diff !== null && diff <= settings.maxExtraCents;
+            return (
+              <tr key={key}>
+                <td>{optionLabel(key)}{isPaid && <span className="badge good" style={{ marginLeft: 6 }}>paid</span>}{p.check.note && p.cents !== null ? <div className="muted small">{p.check.note}</div> : null}</td>
+                <td>{p.cents === null ? <span className="muted">{p.check.note ?? "Not offered"}</span> : <b>{formatMoney(p.cents, booking.currency)}</b>}</td>
+                <td>{diff === null ? "—" : <span className={within ? "badge good" : undefined}>{extraText(diff, booking.currency)}</span>}</td>
+                <td>{"lowest" in p && p.lowest !== null && p.lowest !== undefined ? formatMoney(p.lowest, booking.currency) : "—"}</td>
+                <td className="muted small">{formatTimestamp(p.check.checkedAt)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </section>
   );
 }

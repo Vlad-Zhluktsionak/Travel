@@ -1,6 +1,9 @@
-import { CABIN_LABELS, CABIN_RANK, isMixedCabin, sliceCabins } from "../cabins";
+import { CABIN_LABELS, CABIN_RANK } from "../cabins";
+import { LEVEL_LABELS, sameSearchOrder, sliceSatisfies, targetsFor, detectedPaidKey, type SliceTarget } from "../fares";
 import type { Cabin, Itinerary } from "../types";
-import type { FlightPriceProvider, PriceQuote } from "./provider";
+import type { FlightPriceProvider, PriceQuote, QuoteContext } from "./provider";
+
+export { sameFareBrand } from "../fares";
 
 interface DuffelSegment {
   origin: { iata_code: string };
@@ -21,50 +24,25 @@ export interface DuffelOffer {
 
 const normalizeFlightNumber = (n: string) => n.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
 
-/** Fare brand of each slice; falls back to the trip-wide brand for older bookings. */
-function sliceBrands(it: Itinerary): (string | null)[] {
-  const per = it.sliceFareBrands;
-  return it.slices.map((_, i) => (per && per.length === it.slices.length ? per[i] : it.fareBrand));
+/** What each slice must match: the itinerary's explicit targets, or (by default) exactly what was booked. */
+function targetsOf(it: Itinerary): SliceTarget[] {
+  return it.targets ?? targetsFor(it, detectedPaidKey(it), { isPaid: true, overridden: false });
 }
 
-const BRAND_FILLER = new Set(["class", "cabin", "fare", "the", "seat", "seats", "ticket"]);
-const brandWords = (s: string) =>
-  new Set(
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9 ]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w && !BRAND_FILLER.has(w)),
-  );
-
-/**
- * Same fare product? Names differ slightly between confirmation emails and airline APIs
- * ("Premium Class" vs "Premium", "Main Cabin" vs "Main"), so compare their meaningful words.
- */
-export function sameFareBrand(booked: string, offered: string): boolean {
-  const a = brandWords(booked);
-  const b = brandWords(offered);
-  if (a.size === 0 || b.size === 0) return false;
-  // "Basic" changes the product (no changes, no seat choice): "Economy" is not "Basic Economy".
-  if (a.has("basic") !== b.has("basic")) return false;
-  const [small, big] = a.size <= b.size ? [a, b] : [b, a];
-  return [...small].every((w) => big.has(w));
+/** Cabins of a slice's segments, as reported per passenger. */
+function sliceCabinList(slice: DuffelOffer["slices"][number]): Cabin[] {
+  return slice.segments.flatMap((s) => (s.passengers ?? []).map((p) => p.cabin_class).filter((c): c is Cabin => !!c && c in CABIN_RANK));
 }
 
-/** True if the offer flies exactly the booked flights, slice for slice, in the booked cabin (or better). */
-export function offerMatchesItinerary(offer: DuffelOffer, itinerary: Itinerary): boolean {
-  if (offer.slices.length !== itinerary.slices.length) return false;
-  const cabins = sliceCabins(itinerary);
-  return itinerary.slices.every((booked, i) => {
+/** Same flights as booked, slice for slice and segment for segment. */
+function sameFlights(offer: DuffelOffer, it: Itinerary): boolean {
+  if (offer.slices.length !== it.slices.length) return false;
+  return it.slices.every((booked, i) => {
     const offered = offer.slices[i].segments;
     if (offered.length !== booked.length) return false;
     return booked.every((seg, j) => {
       const o = offered[j];
-      // Never compare against a lower cabin (e.g. economy on a leg booked in first).
-      const segCabins = (o.passengers ?? []).map((p) => p.cabin_class).filter((c): c is Cabin => !!c && c in CABIN_RANK);
-      const cabinOk = segCabins.every((c) => CABIN_RANK[c] >= CABIN_RANK[cabins[i]]);
       return (
-        cabinOk &&
         o.marketing_carrier.iata_code === seg.carrier &&
         normalizeFlightNumber(o.marketing_carrier_flight_number) === seg.flightNumber &&
         o.origin.iata_code === seg.origin &&
@@ -75,25 +53,21 @@ export function offerMatchesItinerary(offer: DuffelOffer, itinerary: Itinerary):
   });
 }
 
+/** True if the offer flies exactly the booked flights and every slice meets its fare target. */
+export function offerMatchesItinerary(offer: DuffelOffer, it: Itinerary): boolean {
+  if (!sameFlights(offer, it)) return false;
+  const targets = targetsOf(it);
+  return offer.slices.every((s, i) => sliceSatisfies(targets[i], sliceCabinList(s), s.fare_brand_name));
+}
+
 /**
- * Pick the cheapest offer that is a like-for-like replacement: the exact same flights, the same cabin
- * (or better) on every leg, and — where the booking names a fare brand for a slice — the same fare
- * brand (so "Premium Class" is never compared with a plain "Main"/"Saver" seat). Basic-economy fares
- * are excluded unless that's what was booked.
+ * Cheapest like-for-like offer: the exact same flights, and on every slice the target fare level (and,
+ * for what was paid, the same fare name — so "Premium Class" is never compared with "Main"/"Saver").
  */
-export function cheapestMatchingOffer(offers: DuffelOffer[], itinerary: Itinerary): DuffelOffer | null {
-  const brands = sliceBrands(itinerary);
+export function cheapestMatchingOffer(offers: DuffelOffer[], it: Itinerary): DuffelOffer | null {
   let best: DuffelOffer | null = null;
   for (const offer of offers) {
-    if (!offerMatchesItinerary(offer, itinerary)) continue;
-    const brandsOk = offer.slices.every((s, i) => {
-      const booked = brands[i];
-      const offered = s.fare_brand_name ?? null;
-      if (booked && offered) return sameFareBrand(booked, offered);
-      // Unknown on either side: only rule out basic economy (unless that's what was booked).
-      return /basic/i.test(booked ?? "") || !/basic/i.test(offered ?? "");
-    });
-    if (!brandsOk) continue;
+    if (!offerMatchesItinerary(offer, it)) continue;
     if (!best || Number(offer.total_amount) < Number(best.total_amount)) best = offer;
   }
   return best;
@@ -108,21 +82,20 @@ export class DuffelPriceProvider implements FlightPriceProvider {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  /** One offer request (Duffel takes a single cabin per request); returns the cheapest like-for-like offer. */
-  private async search(itinerary: Itinerary, cabin: Cabin): Promise<DuffelOffer | null> {
+  /** One offer request (Duffel takes a single cabin per request). */
+  private async fetchOffers(it: Itinerary, cabin: Cabin): Promise<DuffelOffer[]> {
     const body = {
       data: {
-        slices: itinerary.slices.map((slice) => ({
+        slices: it.slices.map((slice) => ({
           origin: slice[0].origin,
           destination: slice[slice.length - 1].destination,
           departure_date: slice[0].departureLocal.slice(0, 10),
         })),
-        passengers: Array.from({ length: itinerary.passengerCount }, () => ({ type: "adult" })),
+        passengers: Array.from({ length: it.passengerCount }, () => ({ type: "adult" })),
         cabin_class: cabin,
-        max_connections: Math.max(...itinerary.slices.map((s) => s.length - 1)),
+        max_connections: Math.max(...it.slices.map((s) => s.length - 1)),
       },
     };
-
     const res = await this.fetchImpl("https://api.duffel.com/air/offer_requests?return_offers=true&supplier_timeout=20000", {
       method: "POST",
       headers: {
@@ -137,15 +110,36 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       throw new Error(`Duffel offer request failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
     }
     const json = (await res.json()) as { data: { offers: DuffelOffer[] } };
-    return cheapestMatchingOffer(json.data.offers ?? [], itinerary);
+    return json.data.offers ?? [];
   }
 
-  async quote(itinerary: Itinerary): Promise<PriceQuote> {
-    const cabins = sliceCabins(itinerary);
-    const brands = sliceBrands(itinerary);
+  /** Offers for these slices in this cabin, searched at most once per check (see QuoteContext.searchCache). */
+  private offers(it: Itinerary, sliceIdx: number[], cabin: Cabin, cache?: Map<string, Promise<unknown>>): Promise<DuffelOffer[]> {
+    const sub: Itinerary = { ...it, slices: sliceIdx.map((i) => it.slices[i]) };
+    const key = `duffel|${sub.slices.map((s) => s.map((g) => `${g.carrier}${g.flightNumber}@${g.departureLocal.slice(0, 10)}`).join(">")).join("|")}|${cabin}|${it.passengerCount}`;
+    const hit = cache?.get(key) as Promise<DuffelOffer[]> | undefined;
+    if (hit) return hit;
+    const pending = this.fetchOffers(sub, cabin);
+    cache?.set(key, pending);
+    pending.catch(() => cache?.delete(key));
+    return pending;
+  }
 
-    if (!isMixedCabin(itinerary)) {
-      const offer = await this.search(itinerary, cabins[0]);
+  /** Cheapest match for a group of slices, trying the target's search cabins in order. */
+  private async best(it: Itinerary, sliceIdx: number[], targets: SliceTarget[], ctx?: QuoteContext): Promise<DuffelOffer | null> {
+    const sub: Itinerary = { ...it, slices: sliceIdx.map((i) => it.slices[i]), targets: sliceIdx.map((i) => targets[i]) };
+    for (const cabin of targets[sliceIdx[0]].searchCabins) {
+      const offer = cheapestMatchingOffer(await this.offers(it, sliceIdx, cabin, ctx?.searchCache), sub);
+      if (offer) return offer;
+    }
+    return null;
+  }
+
+  async quote(it: Itinerary, ctx?: QuoteContext): Promise<PriceQuote> {
+    const targets = targetsOf(it);
+
+    if (sameSearchOrder(targets)) {
+      const offer = await this.best(it, it.slices.map((_, i) => i), targets, ctx);
       if (!offer) return { priceCents: null, currency: null, note: "Exact flights and fare not currently offered" };
       return {
         priceCents: Math.round(Number(offer.total_amount) * 100),
@@ -154,31 +148,24 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       };
     }
 
-    // Mixed cabins (e.g. premium out, first back) can't be searched in one request, so price each
-    // direction as a one-way in its own cabin and add them up. Most airlines price round trips close to
-    // the sum of one-ways, so this is an estimate — the note says so.
+    // Different cabins per direction can't be searched in one request, so price each direction as a
+    // one-way and add them up. Most airlines price round trips close to the sum of one-ways, so this
+    // is an estimate — the note says so.
     let total = 0;
     let currency: string | null = null;
     const names: string[] = [];
-    for (let i = 0; i < itinerary.slices.length; i++) {
-      const oneWay: Itinerary = {
-        ...itinerary,
-        slices: [itinerary.slices[i]],
-        cabin: cabins[i],
-        sliceCabins: [cabins[i]],
-        sliceFareBrands: [brands[i]],
-        fareBrand: brands[i],
-      };
-      const offer = await this.search(oneWay, cabins[i]);
+    for (let i = 0; i < it.slices.length; i++) {
+      const offer = await this.best(it, [i], targets, ctx);
       if (!offer) {
-        return { priceCents: null, currency: null, note: `${CABIN_LABELS[cabins[i]]} not currently offered on leg ${i + 1}` };
+        const what = targets[i].exactBrand ?? LEVEL_LABELS[targets[i].level] ?? CABIN_LABELS[targets[i].searchCabins[0]];
+        return { priceCents: null, currency: null, note: `${what} not currently offered on leg ${i + 1}` };
       }
       if (currency && offer.total_currency !== currency) {
         return { priceCents: null, currency: null, note: "One-way prices came back in different currencies" };
       }
       currency = offer.total_currency;
       total += Math.round(Number(offer.total_amount) * 100);
-      names.push(offer.slices[0].fare_brand_name ?? CABIN_LABELS[cabins[i]]);
+      names.push(offer.slices[0].fare_brand_name ?? LEVEL_LABELS[targets[i].level]);
     }
     return { priceCents: total, currency, note: `${names.join(" / ")} (${names.length} one-way prices added together)` };
   }

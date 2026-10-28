@@ -1,20 +1,21 @@
 import { config } from "./config";
-import { CABIN_LABELS, describeCabins, raiseCabins, sliceCabins, upgradeCabinsFor } from "./cabins";
-export { CABIN_LABELS, upgradeCabinsFor } from "./cabins";
+import { describeCabins } from "./cabins";
+import { fareWatchSettings, optionLabel, targetsFor, type FareWatchSettings, type OptionKey } from "./fares";
 import { hotelAdvice, rebookAdvice } from "./advice";
 import { formatDate, formatLocal, formatMoney } from "./format";
 import { escapeHtml, sendEmail, type Mailer } from "./notify";
 import { getProviders, type Providers } from "./pricing";
 import { nightsBetween } from "./pricing/serpapi-hotels";
-import type { FlightPriceProvider, PriceQuote } from "./pricing/provider";
+import type { FlightPriceProvider, PriceQuote, QuoteContext } from "./pricing/provider";
 import * as repo from "./repo";
-import type { Booking, Cabin, FlightBooking, UpgradeCabin } from "./types";
+import type { Booking, FlightBooking } from "./types";
 
 /** After an alert, only alert again if the price drops at least this much further. */
 const REALERT_STEP_CENTS = 500;
 
-export interface UpgradeOutcome {
-  cabin: UpgradeCabin;
+/** Result for one ticked fare option other than what was paid. */
+export interface OptionOutcome {
+  key: OptionKey;
   priceCents: number | null;
   alerted: boolean;
   error?: string;
@@ -23,9 +24,9 @@ export interface UpgradeOutcome {
 export type CheckOutcome =
   | { status: "departed" }
   | { status: "skipped" }
-  | { status: "error"; error: string; upgrades?: UpgradeOutcome[] }
-  | { status: "unavailable"; note?: string; upgrades?: UpgradeOutcome[] }
-  | { status: "checked"; priceCents: number; currency: string; alerted: boolean; upgrades?: UpgradeOutcome[] };
+  | { status: "error"; error: string; options?: OptionOutcome[] }
+  | { status: "unavailable"; note?: string; options?: OptionOutcome[] }
+  | { status: "checked"; priceCents: number; currency: string; alerted: boolean; options?: OptionOutcome[] };
 
 export interface MonitorDeps {
   providers?: Partial<Providers>;
@@ -50,23 +51,38 @@ export async function checkBooking(booking: Booking, deps: MonitorDeps = {}): Pr
   }
 
   const providers: Providers = { ...getProviders(), ...deps.providers };
-  const outcome: CheckOutcome = await checkBookedCabin(booking, providers, mailer);
+  // One cache per check: ticked fare options that need the same search share a single API call.
+  const ctx: QuoteContext = {
+    bookingKey: `${booking.id}:${booking.confirmationCode}`,
+    paidCents: booking.paidCents,
+    currency: booking.currency,
+    searchCache: new Map(),
+  };
+  const settings = booking.kind === "flight" ? fareWatchSettings(booking.details) : null;
+  if (settings) ctx.paidLevels = settings.paid.split("+");
+  const outcome: CheckOutcome = await checkWhatWasPaid(booking, providers, mailer, ctx, settings);
 
-  // Upgrade watching is an add-on: it never changes or blocks the main price check's result.
-  if (booking.kind === "flight" && booking.details.upgradeWatch?.enabled && outcome.status !== "departed" && outcome.status !== "skipped") {
-    outcome.upgrades = await checkUpgrades(booking, providers.flight, mailer);
+  // Other ticked fare options are add-ons: they never change or block the main price check's result.
+  if (booking.kind === "flight" && settings && settings.options.length > 1 && outcome.status !== "departed" && outcome.status !== "skipped") {
+    outcome.options = await checkFareOptions(booking, settings, providers.flight, mailer, ctx);
   }
   return outcome;
 }
 
-async function checkBookedCabin(booking: Booking, providers: Providers, mailer: Mailer): Promise<CheckOutcome> {
-  const ctx = { bookingKey: `${booking.id}:${booking.confirmationCode}`, paidCents: booking.paidCents, currency: booking.currency };
+async function checkWhatWasPaid(
+  booking: Booking,
+  providers: Providers,
+  mailer: Mailer,
+  ctx: QuoteContext,
+  settings: FareWatchSettings | null,
+): Promise<CheckOutcome> {
   const providerName = booking.kind === "flight" ? providers.flight.name : providers.hotel.name;
 
   let quote: PriceQuote;
   try {
     if (booking.kind === "flight") {
-      quote = await providers.flight.quote(booking.details, ctx);
+      const targets = targetsFor(booking.details, settings!.paid, { isPaid: true, overridden: settings!.paidOverridden });
+      quote = await providers.flight.quote({ ...booking.details, targets }, ctx);
     } else {
       const hotelQuote = await providers.hotel.quote(booking.details, ctx);
       if (hotelQuote.propertyToken && hotelQuote.propertyToken !== booking.details.propertyToken) {
@@ -101,104 +117,93 @@ async function checkBookedCabin(booking: Booking, providers: Providers, mailer: 
   return { ...outcome, alerted: true };
 }
 
-/** Price one upgrade cabin; "business_first" tries business and falls back to first. */
-async function quoteUpgrade(booking: FlightBooking, cabin: UpgradeCabin, provider: FlightPriceProvider): Promise<PriceQuote> {
-  const attempts: Cabin[] = cabin === "premium_economy" ? ["premium_economy"] : ["business", "first"];
-  let quote: PriceQuote = { priceCents: null, currency: null };
-  for (const c of attempts) {
-    // A higher cabin is never basic economy, so drop the booked fare brand from the comparison.
-    // Raise every leg to at least this cabin (never lower one), and drop fare-brand matching on the
-    // raised legs: a higher cabin is a different fare product.
-    const raised = raiseCabins(booking.details, c);
-    const brands = booking.details.sliceFareBrands ?? booking.details.slices.map(() => booking.details.fareBrand);
-    const before = sliceCabins(booking.details);
-    quote = await provider.quote(
-      {
-        ...raised,
-        fareBrand: null,
-        sliceFareBrands: raised.sliceCabins!.map((cab, i) => (cab === before[i] ? brands[i] : null)),
-      },
-      { bookingKey: `${booking.id}:${booking.confirmationCode}:${c}`, paidCents: booking.paidCents, currency: booking.currency },
-    );
-    if (quote.priceCents !== null) return { ...quote, note: quote.note ?? CABIN_LABELS[c] };
-  }
-  return { ...quote, note: quote.note ?? "Not offered on these flights" };
-}
-
-async function checkUpgrades(booking: FlightBooking, provider: FlightPriceProvider, mailer: Mailer): Promise<UpgradeOutcome[]> {
-  const watch = booking.details.upgradeWatch!;
-  const results: UpgradeOutcome[] = [];
-  for (const cabin of upgradeCabinsFor(booking.details)) {
+async function checkFareOptions(
+  booking: FlightBooking,
+  settings: FareWatchSettings,
+  provider: FlightPriceProvider,
+  mailer: Mailer,
+  ctx: QuoteContext,
+): Promise<OptionOutcome[]> {
+  const results: OptionOutcome[] = [];
+  for (const key of settings.options.slice(1)) {
     let quote: PriceQuote;
     try {
-      quote = await quoteUpgrade(booking, cabin, provider);
+      const targets = targetsFor(booking.details, key, { isPaid: false, overridden: false });
+      quote = await provider.quote({ ...booking.details, targets }, { ...ctx, bookingKey: `${ctx.bookingKey}:${key}` });
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      await repo.recordPriceCheck(booking.id, provider.name, null, null, `Error: ${error.slice(0, 200)}`, cabin);
-      results.push({ cabin, priceCents: null, alerted: false, error });
+      await repo.recordPriceCheck(booking.id, provider.name, null, null, `Error: ${error.slice(0, 200)}`, key);
+      results.push({ key, priceCents: null, alerted: false, error });
       continue;
     }
-    await repo.recordPriceCheck(booking.id, provider.name, quote.priceCents, quote.currency, quote.note ?? null, cabin);
-    const result: UpgradeOutcome = { cabin, priceCents: quote.priceCents, alerted: false };
+    await repo.recordPriceCheck(booking.id, provider.name, quote.priceCents, quote.currency, quote.note ?? null, key);
+    const result: OptionOutcome = { key, priceCents: quote.priceCents, alerted: false };
     results.push(result);
     if (quote.priceCents === null || quote.currency !== booking.currency) continue;
 
-    const extra = quote.priceCents - booking.paidCents;
-    if (extra > watch.maxExtraCents) continue;
-    const alreadyAlerted = await repo.lowestAlertedCents(booking.id, booking.paidCents, cabin);
+    // Alert when this option costs at most the trip's limit more than what was paid.
+    if (quote.priceCents - booking.paidCents > settings.maxExtraCents) continue;
+    const alreadyAlerted = await repo.lowestAlertedCents(booking.id, booking.paidCents, key);
     if (alreadyAlerted !== null && quote.priceCents > alreadyAlerted - REALERT_STEP_CENTS) continue;
 
     const user = await repo.findUserById(booking.userId);
     if (!user) continue;
-    await repo.createAlert(booking.id, booking.paidCents, quote.priceCents, quote.currency, cabin);
-    await mailer(buildUpgradeEmail(user.email, booking, cabin, quote, provider.name === "mock"));
+    await repo.createAlert(booking.id, booking.paidCents, quote.priceCents, quote.currency, key);
+    await mailer(buildOptionEmail(user.email, booking, key, quote, settings, provider.name === "mock"));
     result.alerted = true;
   }
   return results;
 }
 
-export const UPGRADE_LABELS: Record<UpgradeCabin, string> = {
-  premium_economy: "Premium economy",
-  business_first: "Business / First",
-};
+/** "+$120.00", "no extra cost" or "$45.00 less". */
+export function extraText(diffCents: number, currency: string): string {
+  if (diffCents === 0) return "no extra cost";
+  return diffCents > 0 ? `+${formatMoney(diffCents, currency)}` : `${formatMoney(-diffCents, currency)} less`;
+}
 
-export function buildUpgradeEmail(to: string, booking: FlightBooking, cabin: UpgradeCabin, quote: PriceQuote, simulated: boolean) {
+export function buildOptionEmail(
+  to: string,
+  booking: FlightBooking,
+  key: OptionKey,
+  quote: PriceQuote,
+  settings: FareWatchSettings,
+  simulated: boolean,
+) {
   const trip = describeTrip(booking);
   const found = quote.priceCents!;
-  const extra = found - booking.paidCents;
-  const extraText = extra <= 0 ? `no more than you paid (${formatMoney(-extra, booking.currency)} less)` : `only ${formatMoney(extra, booking.currency)} more than you paid`;
-  const cabinName = quote.note && !/not offered/i.test(quote.note) ? quote.note : UPGRADE_LABELS[cabin];
+  const diff = found - booking.paidCents;
+  const label = optionLabel(key);
   const airline = booking.details.airline ?? booking.details.slices[0][0].carrier;
   const link = `${config.appUrl}/trips/${booking.id}`;
-  const advice = `Look up your reservation (${booking.confirmationCode}) on ${airline}'s website or app and change it to the same flights in the higher cabin; you'd pay the fare difference. The airline calculates the exact amount, so check it before you pay.`;
+  const advice = `Look up your reservation (${booking.confirmationCode}) on ${airline}'s website or app and change it to the same flights with this fare; you'd pay (or get back) the fare difference. The airline calculates the exact amount, so check it before you confirm.`;
   const facts: [string, string][] = [
     ["Confirmation", booking.confirmationCode],
     ["Departs", formatLocal(booking.details.slices[0][0].departureLocal)],
     ["Passengers", String(booking.details.passengerCount)],
-    ["You paid", `${formatMoney(booking.paidCents, booking.currency)} (${describeCabins(booking.details)})`],
-    [`${UPGRADE_LABELS[cabin]} now`, formatMoney(found, booking.currency)],
-    ["Your upgrade limit", `${formatMoney(booking.details.upgradeWatch?.maxExtraCents ?? 0, booking.currency)} extra`],
+    ["You paid", `${formatMoney(booking.paidCents, booking.currency)} (${optionLabel(settings.paid)})`],
+    [`${label} now`, `${formatMoney(found, booking.currency)}${quote.note ? ` (${quote.note})` : ""}`],
+    ["Your limit", `${formatMoney(settings.maxExtraCents, booking.currency)} extra`],
   ];
+  const headline = `${label} for ${extraText(diff, booking.currency)}`;
   const demo = simulated ? "\n\n(Demo mode: this price is simulated, not a real fare.)" : "";
-  const text = `${UPGRADE_LABELS[cabin]} on your ${trip} flights is now ${extraText}.
+  const text = `${label} on your ${trip} flights now costs ${extraText(diff, booking.currency)} compared with what you paid.
 
 ${facts.map(([k, v]) => `${k}: ${v}`).join("\n")}
 
-How to upgrade: ${advice}
+How to switch: ${advice}
 
 Details: ${link}${demo}`;
   const html = `<div style="font-family:system-ui,sans-serif;max-width:560px">
-<h2 style="margin:0 0 8px">⬆️ ${escapeHtml(UPGRADE_LABELS[cabin])} for ${escapeHtml(extra <= 0 ? "no extra cost" : `+${formatMoney(extra, booking.currency)}`)}</h2>
-<p style="margin:0 0 16px;color:#555">${escapeHtml(trip)} · ${escapeHtml(cabinName)}</p>
+<h2 style="margin:0 0 8px">⬆️ ${escapeHtml(headline)}</h2>
+<p style="margin:0 0 16px;color:#555">${escapeHtml(trip)}</p>
 <table style="border-collapse:collapse;margin-bottom:16px">
 ${facts.map(([k, v]) => `<tr><td style="padding:4px 16px 4px 0;color:#555">${escapeHtml(k)}</td><td><b>${escapeHtml(v)}</b></td></tr>`).join("\n")}
 </table>
-<p><b>How to upgrade:</b> ${escapeHtml(advice)}</p>
+<p><b>How to switch:</b> ${escapeHtml(advice)}</p>
 <p><a href="${escapeHtml(link)}">View details</a></p>
 ${simulated ? '<p style="color:#a15c00">Demo mode: this price is simulated, not a real fare.</p>' : ""}
 </div>`;
-  const subjectExtra = extra <= 0 ? "no extra cost" : `+${formatMoney(extra, booking.currency)}`;
-  return { to, subject: `⬆️ Upgrade: ${UPGRADE_LABELS[cabin]} for ${subjectExtra} on ${trip}`, text, html };
+  return { to, subject: `⬆️ ${headline}: ${trip}`, text, html };
 }
 
 /** Short human description, e.g. "SFO → BOS (round trip)" or "Hyatt Regency Chicago, Mar 3–6". */

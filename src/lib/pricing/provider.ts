@@ -11,6 +11,13 @@ export interface QuoteContext {
   bookingKey: string;
   paidCents: number;
   currency: string;
+  /**
+   * Shared across the fare options priced in one check, so options needing the same search (e.g. Main
+   * and Premium round trip both come from one economy search) only cost one API call.
+   */
+  searchCache?: Map<string, Promise<unknown>>;
+  /** Fare level of each slice of what was paid (lets the demo provider price other options relative to it). */
+  paidLevels?: string[];
 }
 
 export interface FlightPriceProvider {
