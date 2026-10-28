@@ -95,3 +95,48 @@ describe("pricing the user's Alaska trip", () => {
     expect(calls).toEqual(["search SEA economy", "search SEA premium_economy", "seatmap main", "search PVR first"]);
   });
 });
+
+describe("expired offers", () => {
+  it("refreshes the Main offer and retries the seat map when Duffel says the offer is no longer available", async () => {
+    const calls: string[] = [];
+    let searches = 0;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (url.includes("/air/seat_maps")) {
+        const id = new URL(url).searchParams.get("offer_id")!;
+        calls.push(`seatmap ${id}`);
+        if (id === "main_1") {
+          return new Response(JSON.stringify({ errors: [{ title: "Requested offer is no longer available", code: "offer_no_longer_available", type: "airline_error" }] }), { status: 422 });
+        }
+        return new Response(JSON.stringify({ data: [seatMap("seg_main_2", [seat("7A", "79.00", "Premium Class"), seat("7C", "89.00", "Premium Class")])] }), { status: 200 });
+      }
+      const body = JSON.parse(String(init!.body)).data;
+      const from = body.slices[0].origin;
+      calls.push(`search ${from} ${body.cabin_class}`);
+      if (from === "SEA" && body.cabin_class === "economy") {
+        searches++;
+        return new Response(JSON.stringify({ data: { offers: [oneWay(`main_${searches}`, "845.50", "SEA", "PVR", "2031-01-15", "1360", "economy", "Main")] } }), { status: 200 });
+      }
+      const offers = from === "PVR" && body.cabin_class === "first" ? [oneWay("first", "1400.00", "PVR", "SEA", "2031-01-22", "1361", "first", "First")] : [];
+      return new Response(JSON.stringify({ data: { offers } }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const quote = await new DuffelPriceProvider("tok", fetchImpl).quote(pvr, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
+    expect(quote.priceCents).toBe(84_550 + 7_900 + 8_900 + 140_000);
+    expect(calls).toEqual([
+      "search SEA economy", "search SEA premium_economy", "seatmap main_1", // expired
+      "search SEA economy", "seatmap main_2", // refreshed and retried
+      "search PVR first",
+    ]);
+  });
+
+  it("turns Duffel errors into a short readable message", async () => {
+    const fetchImpl = (async (url: string) => {
+      if (url.includes("/air/seat_maps")) {
+        return new Response(JSON.stringify({ errors: [{ title: "Seat maps are not available for this airline", code: "unsupported" }] }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ data: { offers: [oneWay("m", "845.50", "SEA", "PVR", "2031-01-15", "1360", "economy", "Main")] } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const quote = await new DuffelPriceProvider("tok", fetchImpl).quote({ ...pvr, slices: [pvr.slices[0]], sliceCabins: ["economy"], sliceFareBrands: ["Premium Class"] });
+    expect(quote.note).toContain("Main + premium seat: Seat map failed: Seat maps are not available for this airline (unsupported)");
+  });
+});

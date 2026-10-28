@@ -101,6 +101,28 @@ export function premiumSeatCost(
   return { cents: total, currency: currency ?? "USD" };
 }
 
+/** A Duffel API error, with the short code (e.g. "offer_no_longer_available") and a readable message. */
+export class DuffelError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | null,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function duffelError(what: string, res: Response): Promise<DuffelError> {
+  const body = await res.text();
+  try {
+    const e = (JSON.parse(body) as { errors?: { title?: string; message?: string; code?: string }[] }).errors?.[0];
+    if (e) return new DuffelError(res.status, e.code ?? null, `${what} failed: ${e.title ?? e.message ?? "error"}${e.code ? ` (${e.code})` : ""}`);
+  } catch {
+    // not JSON
+  }
+  return new DuffelError(res.status, null, `${what} failed: HTTP ${res.status} ${body.slice(0, 120)}`);
+}
+
 const normalizeFlightNumber = (n: string) => n.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
 
 /** What each slice must match: the itinerary's explicit targets, or (by default) exactly what was booked. */
@@ -210,7 +232,7 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`Duffel offer request failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+      throw await duffelError("Duffel search", res);
     }
     const json = (await res.json()) as { data: { offers: DuffelOffer[] } };
     return json.data.offers ?? [];
@@ -264,7 +286,7 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       const res = await this.fetchImpl(`https://api.duffel.com/air/seat_maps?offer_id=${encodeURIComponent(offerId)}`, {
         headers: { Authorization: `Bearer ${this.token}`, "Duffel-Version": "v2", Accept: "application/json" },
       });
-      if (!res.ok) throw new Error(`Duffel seat map request failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+      if (!res.ok) throw await duffelError("Seat map", res);
       return ((await res.json()) as { data: DuffelSeatMap[] }).data ?? [];
     })();
     cache?.set(key, pending);
@@ -283,31 +305,40 @@ export class DuffelPriceProvider implements FlightPriceProvider {
       targets[i].level === "extra" ? { level: "main" as const, exactBrand: null, searchCabins: ["economy" as Cabin] } : targets[i],
     );
     const sub: Itinerary = { ...it, slices: sliceIdx.map((i) => it.slices[i]), targets: mainTargets };
-    const offers = await this.offers(it, sliceIdx, "economy", ctx?.searchCache);
-    const base = cheapestMatchingOffer(offers, sub);
+    let base = cheapestMatchingOffer(await this.offers(it, sliceIdx, "economy", ctx?.searchCache), sub);
     if (!base) return { problem: "no regular Main fare to add a seat to." };
 
-    const premiumSegments = sliceIdx.flatMap((i, k) =>
-      targets[i].level === "extra" ? base.slices[k].segments.map((g) => g.id).filter((id): id is string => !!id) : [],
-    );
-    if (premiumSegments.length === 0) return { problem: "the offer has no segment ids for a seat map." };
+    // Offers expire quickly, and a later search can invalidate earlier ones. If the Main offer has
+    // expired, search Main again (fresh, uncached) and ask for its seat map straight away.
     let maps: DuffelSeatMap[];
     try {
-      maps = await this.seatMaps(base.id, ctx?.searchCache);
+      try {
+        maps = await this.seatMaps(base.id, ctx?.searchCache);
+      } catch (err) {
+        if (!(err instanceof DuffelError && (err.status === 422 || err.code === "offer_no_longer_available"))) throw err;
+        base = cheapestMatchingOffer(await this.fetchOffers({ ...it, slices: sliceIdx.map((i) => it.slices[i]) }, "economy"), sub);
+        if (!base) return { problem: "no regular Main fare to add a seat to (after refreshing an expired offer)." };
+        maps = await this.seatMaps(base.id);
+      }
     } catch (err) {
       return { problem: err instanceof Error ? err.message : String(err) };
     }
-    const carrier = base.slices[0]?.segments[0]?.marketing_carrier.iata_code;
+    const offer = base;
+    const premiumSegments = sliceIdx.flatMap((i, k) =>
+      targets[i].level === "extra" ? offer.slices[k].segments.map((g) => g.id).filter((id): id is string => !!id) : [],
+    );
+    if (premiumSegments.length === 0) return { problem: "the offer has no segment ids for a seat map." };
+    const carrier = offer.slices[0]?.segments[0]?.marketing_carrier.iata_code;
     const seats = premiumSeatCost(maps, premiumSegments, it.passengerCount, carrier);
     if ("problem" in seats) return seats;
-    if (seats.currency !== base.total_currency) return { problem: "seat prices are in a different currency than the fare." };
+    if (seats.currency !== offer.total_currency) return { problem: "seat prices are in a different currency than the fare." };
 
-    const totalCents = Math.round(Number(base.total_amount) * 100) + seats.cents;
+    const totalCents = Math.round(Number(offer.total_amount) * 100) + seats.cents;
     return {
       offer: {
-        ...base,
+        ...offer,
         total_amount: (totalCents / 100).toFixed(2),
-        slices: base.slices.map((sl, k) => ({
+        slices: offer.slices.map((sl, k) => ({
           ...sl,
           fare_brand_name:
             targets[sliceIdx[k]].level === "extra" ? `${sl.fare_brand_name ?? "Main"} + premium seat` : sl.fare_brand_name,
