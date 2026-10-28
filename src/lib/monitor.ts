@@ -1,4 +1,6 @@
 import { config } from "./config";
+import { CABIN_LABELS, describeCabins, raiseCabins, sliceCabins, upgradeCabinsFor } from "./cabins";
+export { CABIN_LABELS, upgradeCabinsFor } from "./cabins";
 import { hotelAdvice, rebookAdvice } from "./advice";
 import { formatDate, formatLocal, formatMoney } from "./format";
 import { escapeHtml, sendEmail, type Mailer } from "./notify";
@@ -99,21 +101,23 @@ async function checkBookedCabin(booking: Booking, providers: Providers, mailer: 
   return { ...outcome, alerted: true };
 }
 
-/** The cabins above the one that was booked. */
-export function upgradeCabinsFor(booked: Cabin): UpgradeCabin[] {
-  if (booked === "economy") return ["premium_economy", "business_first"];
-  if (booked === "premium_economy") return ["business_first"];
-  return [];
-}
-
 /** Price one upgrade cabin; "business_first" tries business and falls back to first. */
 async function quoteUpgrade(booking: FlightBooking, cabin: UpgradeCabin, provider: FlightPriceProvider): Promise<PriceQuote> {
   const attempts: Cabin[] = cabin === "premium_economy" ? ["premium_economy"] : ["business", "first"];
   let quote: PriceQuote = { priceCents: null, currency: null };
   for (const c of attempts) {
     // A higher cabin is never basic economy, so drop the booked fare brand from the comparison.
+    // Raise every leg to at least this cabin (never lower one), and drop fare-brand matching on the
+    // raised legs: a higher cabin is a different fare product.
+    const raised = raiseCabins(booking.details, c);
+    const brands = booking.details.sliceFareBrands ?? booking.details.slices.map(() => booking.details.fareBrand);
+    const before = sliceCabins(booking.details);
     quote = await provider.quote(
-      { ...booking.details, cabin: c, fareBrand: null },
+      {
+        ...raised,
+        fareBrand: null,
+        sliceFareBrands: raised.sliceCabins!.map((cab, i) => (cab === before[i] ? brands[i] : null)),
+      },
       { bookingKey: `${booking.id}:${booking.confirmationCode}:${c}`, paidCents: booking.paidCents, currency: booking.currency },
     );
     if (quote.priceCents !== null) return { ...quote, note: quote.note ?? CABIN_LABELS[c] };
@@ -124,7 +128,7 @@ async function quoteUpgrade(booking: FlightBooking, cabin: UpgradeCabin, provide
 async function checkUpgrades(booking: FlightBooking, provider: FlightPriceProvider, mailer: Mailer): Promise<UpgradeOutcome[]> {
   const watch = booking.details.upgradeWatch!;
   const results: UpgradeOutcome[] = [];
-  for (const cabin of upgradeCabinsFor(booking.details.cabin)) {
+  for (const cabin of upgradeCabinsFor(booking.details)) {
     let quote: PriceQuote;
     try {
       quote = await quoteUpgrade(booking, cabin, provider);
@@ -153,13 +157,6 @@ async function checkUpgrades(booking: FlightBooking, provider: FlightPriceProvid
   return results;
 }
 
-export const CABIN_LABELS: Record<Cabin, string> = {
-  economy: "Economy",
-  premium_economy: "Premium economy",
-  business: "Business",
-  first: "First",
-};
-
 export const UPGRADE_LABELS: Record<UpgradeCabin, string> = {
   premium_economy: "Premium economy",
   business_first: "Business / First",
@@ -178,7 +175,7 @@ export function buildUpgradeEmail(to: string, booking: FlightBooking, cabin: Upg
     ["Confirmation", booking.confirmationCode],
     ["Departs", formatLocal(booking.details.slices[0][0].departureLocal)],
     ["Passengers", String(booking.details.passengerCount)],
-    ["You paid", `${formatMoney(booking.paidCents, booking.currency)} (${CABIN_LABELS[booking.details.cabin]})`],
+    ["You paid", `${formatMoney(booking.paidCents, booking.currency)} (${describeCabins(booking.details)})`],
     [`${UPGRADE_LABELS[cabin]} now`, formatMoney(found, booking.currency)],
     ["Your upgrade limit", `${formatMoney(booking.details.upgradeWatch?.maxExtraCents ?? 0, booking.currency)} extra`],
   ];

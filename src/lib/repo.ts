@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import type { Row } from "@libsql/client";
 import { all, get, run } from "./db";
 import { config } from "./config";
-import type { Alert, Booking, ParsedBooking, PriceCheck, UpgradeCabin, User } from "./types";
+import { sliceCabins } from "./cabins";
+import type { Alert, Booking, FlightDetails, ParsedBooking, PriceCheck, UpgradeCabin, User } from "./types";
 
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
@@ -155,6 +156,12 @@ function toBooking(row: Row): Booking {
   } as Booking;
 }
 
+/** What makes two flight bookings the same product to price: cabin and fare brand on every leg. */
+function fareKey(d: FlightDetails): string {
+  const brands = d.sliceFareBrands ?? d.slices.map(() => d.fareBrand);
+  return JSON.stringify([sliceCabins(d), brands.map((b) => b?.toLowerCase().trim() ?? null)]);
+}
+
 /** The date that ends tracking: first departure for flights, check-in for hotels. */
 export function startsOn(b: ParsedBooking): string {
   return b.kind === "flight" ? b.details.slices[0][0].departureLocal.slice(0, 10) : b.details.checkIn;
@@ -196,6 +203,9 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
     if (parsed.kind === "hotel") merged.propertyToken ??= previous.propertyToken ?? null;
     if (parsed.kind === "flight" && previous.upgradeWatch) merged.upgradeWatch ??= previous.upgradeWatch;
   }
+  // If the cabins or fares changed (e.g. a corrected re-import), the old prices were for a different
+  // product: drop them so the chart and alerts start fresh.
+  const resetHistory = existing !== undefined && parsed.kind === "flight" && fareKey(JSON.parse(String(existing.details))) !== fareKey(parsed.details);
   const values = [parsed.paidCents, parsed.currency.toUpperCase(), startsOn(parsed), JSON.stringify(details)];
 
   let id: number;
@@ -205,6 +215,11 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
       "UPDATE bookings SET paid_cents = ?, currency = ?, starts_on = ?, details = ?, status = 'active' WHERE id = ?",
       [...values, id],
     );
+    if (resetHistory) {
+      await run("DELETE FROM price_checks WHERE booking_id = ?", [id]);
+      await run("DELETE FROM alerts WHERE booking_id = ?", [id]);
+      await run("UPDATE bookings SET last_checked_at = NULL WHERE id = ?", [id]);
+    }
   } else {
     const result = await run(
       `INSERT INTO bookings (user_id, kind, confirmation_code, paid_cents, currency, starts_on, details, source)

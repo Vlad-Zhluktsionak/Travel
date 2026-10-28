@@ -16,9 +16,14 @@ export interface Segment {
 export interface Itinerary {
   /** One entry per journey direction (outbound, return, ...), each a list of flight segments. */
   slices: Segment[][];
+  /** Cabin of the first slice (kept for older code/data); see sliceCabins for the per-direction cabins. */
   cabin: Cabin;
+  /** Cabin booked on each slice, e.g. ["premium_economy", "first"]. Missing on older bookings = `cabin` everywhere. */
+  sliceCabins?: Cabin[];
   passengerCount: number;
   fareBrand: string | null;
+  /** Fare brand booked on each slice (e.g. "Premium Class", "First"); null where the email doesn't say. */
+  sliceFareBrands?: (string | null)[];
 }
 
 export interface FlightDetails extends Itinerary {

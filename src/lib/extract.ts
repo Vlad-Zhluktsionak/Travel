@@ -17,7 +17,13 @@ const FlightSchema = z.object({
   booking_site: z.string().nullable().describe("Where it was purchased if not directly from the airline (Expedia, Chase Travel, ...)"),
   passenger_names: z.array(z.string()),
   passenger_count: z.number().int(),
-  cabin: z.enum(["economy", "premium_economy", "business", "first"]),
+  cabin: z.enum(["economy", "premium_economy", "business", "first"]).describe("Cabin of the first (outbound) slice"),
+  slice_cabins: z
+    .array(z.enum(["economy", "premium_economy", "business", "first"]))
+    .describe("Cabin booked on each slice, same order and length as `slices`. Trips can mix cabins, e.g. premium economy out and first class back. Use the cabin, not the fare brand: Main Cabin / Saver = economy; Premium Class / Premium Select / Comfort+ style extra-legroom-only products are economy unless the airline sells them as a separate premium economy cabin; First / Business as named."),
+  slice_fare_brands: z
+    .array(z.string().nullable())
+    .describe("Fare name booked on each slice exactly as written (e.g. 'Saver', 'Main', 'Premium Class', 'First Class'), same order and length as `slices`; null where not stated"),
   fare_brand: z.string().nullable().describe("Fare family if stated, e.g. 'Basic Economy', 'Main Cabin', 'Economy Light'"),
   slices: z
     .array(z.array(SegmentSchema))
@@ -64,7 +70,7 @@ export type Extraction = z.infer<typeof ExtractionSchema>;
 
 const SYSTEM_PROMPT = `You read flight and hotel confirmation emails and extract the booking so a price tracker can re-price the exact same trip later.
 
-Be precise: the tracker searches for these exact flights/hotel on these exact dates, so copy codes, names, dates and times verbatim from the email. If the email is a forwarded message, extract the original booking inside it. If a schedule change or modification email lists both old and new details, use the new ones. For flights, report the airfare actually paid (base fare + taxes and carrier fees, excluding seats, bags and insurance where itemized separately). If a value is not present in the email, return null rather than guessing.`;
+Be precise: the tracker searches for these exact flights/hotel on these exact dates, so copy codes, names, dates and times verbatim from the email. If the email is a forwarded message, extract the original booking inside it. If a schedule change or modification email lists both old and new details, use the new ones. Note the cabin of each direction separately: round trips sometimes mix cabins. For flights, report the airfare actually paid (base fare + taxes and carrier fees, excluding seats, bags and insurance where itemized separately). If a value is not present in the email, return null rather than guessing.`;
 
 /** Emails beyond this size are rejected rather than silently truncated. */
 export const MAX_EMAIL_CHARS = 150_000;
@@ -208,6 +214,9 @@ export function toParsedBooking(x: Extraction): ExtractResult {
         passengerNames: f.passenger_names,
         passengerCount: Math.max(1, f.passenger_count || f.passenger_names.length || 1),
         cabin: f.cabin,
+        // Only trust per-slice cabins when they line up with the slices; otherwise use one cabin for all.
+        sliceCabins: f.slice_cabins.length === slices.length ? f.slice_cabins : slices.map(() => f.cabin),
+        sliceFareBrands: f.slice_fare_brands.length === slices.length ? f.slice_fare_brands.map((b) => b?.trim() || null) : slices.map(() => f.fare_brand),
         fareBrand: f.fare_brand,
         slices,
       },

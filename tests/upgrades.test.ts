@@ -41,10 +41,29 @@ describe("upgrade watching", () => {
   }
 
   it("lists only the cabins above the one booked", () => {
-    expect(upgradeCabinsFor("economy")).toEqual(["premium_economy", "business_first"]);
-    expect(upgradeCabinsFor("premium_economy")).toEqual(["business_first"]);
-    expect(upgradeCabinsFor("business")).toEqual([]);
-    expect(upgradeCabinsFor("first")).toEqual([]);
+    const trip = (sliceCabins: Cabin[]) => ({ ...roundTrip.details, cabin: sliceCabins[0], sliceCabins });
+    expect(upgradeCabinsFor(trip(["economy", "economy"]))).toEqual(["premium_economy", "business_first"]);
+    expect(upgradeCabinsFor(trip(["premium_economy", "premium_economy"]))).toEqual(["business_first"]);
+    expect(upgradeCabinsFor(trip(["premium_economy", "first"]))).toEqual(["business_first"]);
+    expect(upgradeCabinsFor(trip(["business", "first"]))).toEqual([]);
+  });
+
+  it("upgrading a mixed trip raises only the lower legs", async () => {
+    const mixed = { ...roundTrip, details: { ...roundTrip.details, cabin: "premium_economy" as const, sliceCabins: ["premium_economy", "first"] as Cabin[], sliceFareBrands: ["Premium Class", "First"] } };
+    const booking = await setup({ enabled: true, maxExtraCents: 0 }, mixed);
+    const seen: { cabins?: Cabin[]; brands?: (string | null)[] }[] = [];
+    const provider: FlightPriceProvider = {
+      name: "test",
+      async quote(it) {
+        seen.push({ cabins: it.sliceCabins, brands: it.sliceFareBrands });
+        return { priceCents: 999_999, currency: "USD" };
+      },
+    };
+    await checkBooking(booking, { providers: { flight: provider }, mailer, now, force: true });
+    expect(seen).toEqual([
+      { cabins: ["premium_economy", "first"], brands: ["Premium Class", "First"] }, // the booked trip
+      { cabins: ["business", "first"], brands: [null, "First"] }, // business/first upgrade keeps first on the way back
+    ]);
   });
 
   it("does nothing extra when the watch is off", async () => {

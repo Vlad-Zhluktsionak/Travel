@@ -15,8 +15,10 @@ export class MockPriceProvider implements FlightPriceProvider, HotelPriceProvide
     const hash = crypto.createHash("sha256").update(`${ctx.bookingKey}:${bucket}`).digest();
     const noise = hash.readUInt32BE(0) / 0xffffffff; // 0..1
     // Upgrade cabins are priced relative to an economy booking (the common case for the demo).
-    const cabin = (item as { cabin?: string } | null)?.cabin;
-    const cabinFactor = cabin === "premium_economy" ? 1.45 : cabin === "business" ? 2.4 : cabin === "first" ? 3.2 : 1;
+    const it = item as { cabin?: string; sliceCabins?: string[] } | null;
+    const cabins = it?.sliceCabins?.length ? it.sliceCabins : it?.cabin ? [it.cabin] : [];
+    const markup = (c: string) => (c === "premium_economy" ? 1.45 : c === "business" ? 2.4 : c === "first" ? 3.2 : 1);
+    const cabinFactor = cabins.length ? cabins.reduce((sum, c) => sum + markup(c), 0) / cabins.length : 1;
     const factor = cabinFactor * (0.78 + noise * 0.34); // 78%..112% of the price paid (times the cabin markup)
     return {
       priceCents: Math.round((ctx.paidCents * factor) / 100) * 100,

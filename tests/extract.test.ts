@@ -15,6 +15,8 @@ const flightExtraction: Extraction = {
     passenger_names: ["ALEX SMITH"],
     passenger_count: 1,
     cabin: "economy",
+    slice_cabins: ["economy"],
+    slice_fare_brands: ["Main Cabin"],
     fare_brand: "Main Cabin",
     slices: [
       [
@@ -65,6 +67,26 @@ describe("toParsedBooking", () => {
       paidCents: 41_260,
       currency: "USD",
       details: { slices: [[{ carrier: "DL", flightNumber: "402", origin: "JFK", destination: "LAX" }]] },
+    });
+  });
+
+  it("keeps a different cabin and fare for each direction", () => {
+    const seg = (from: string, to: string, date: string) => ({
+      carrier_iata: "AS", flight_number: "1234", origin_iata: from, destination_iata: to, departure_local: `${date}T10:13`, arrival_local: null,
+    });
+    const mixed = structuredClone(flightExtraction);
+    mixed.flight!.cabin = "premium_economy";
+    mixed.flight!.slices = [[seg("SEA", "PVR", "2031-01-15")], [seg("PVR", "SEA", "2031-01-22")]];
+    mixed.flight!.slice_cabins = ["premium_economy", "first"];
+    mixed.flight!.slice_fare_brands = ["Premium Class", "First Class"];
+    expect(toParsedBooking(mixed).booking).toMatchObject({
+      details: { sliceCabins: ["premium_economy", "first"], sliceFareBrands: ["Premium Class", "First Class"] },
+    });
+    // Per-slice lists that don't line up with the slices fall back to one value for every slice.
+    mixed.flight!.slice_cabins = ["first"];
+    mixed.flight!.slice_fare_brands = [];
+    expect(toParsedBooking(mixed).booking).toMatchObject({
+      details: { sliceCabins: ["premium_economy", "premium_economy"], sliceFareBrands: ["Main Cabin", "Main Cabin"] },
     });
   });
 

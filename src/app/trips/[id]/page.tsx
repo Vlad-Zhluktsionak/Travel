@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { hotelAdvice, rebookAdvice } from "@/lib/advice";
 import { formatDate, formatLocal, formatMoney, formatTimestamp } from "@/lib/format";
-import { CABIN_LABELS, describeTrip, UPGRADE_LABELS, upgradeCabinsFor } from "@/lib/monitor";
+import { CABIN_LABELS, describeCabins, isMixedCabin, lowestCabin, sliceCabins, upgradeCabinsFor } from "@/lib/cabins";
+import { describeTrip, UPGRADE_LABELS } from "@/lib/monitor";
 import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
 import type { UpgradeSummary } from "@/lib/repo";
@@ -125,7 +126,7 @@ function flightSummary(b: FlightBooking) {
   return [
     f.airline ?? f.slices[0][0].carrier,
     f.bookingSite && `via ${f.bookingSite}`,
-    f.cabin.replace("_", " ") + (f.fareBrand ? ` (${f.fareBrand})` : ""),
+    describeCabins(f) + (!isMixedCabin(f) && f.fareBrand ? ` (${f.fareBrand})` : ""),
     `${f.passengerCount} passenger(s)`,
   ]
     .filter(Boolean)
@@ -160,7 +161,7 @@ function HotelDetailsCard({ booking }: { booking: HotelBooking }) {
 }
 
 function UpgradeCard({ booking, upgrades }: { booking: FlightBooking; upgrades: UpgradeSummary[] }) {
-  const cabins = upgradeCabinsFor(booking.details.cabin);
+  const cabins = upgradeCabinsFor(booking.details);
   const watch = booking.details.upgradeWatch;
   const enabled = Boolean(watch?.enabled);
   const maxExtra = (watch?.maxExtraCents ?? 20_000) / 100;
@@ -168,7 +169,7 @@ function UpgradeCard({ booking, upgrades }: { booking: FlightBooking; upgrades: 
     return (
       <section className="card">
         <h2>⬆️ Upgrades</h2>
-        <p className="muted small">You booked {CABIN_LABELS[booking.details.cabin].toLowerCase()}, the top cabin we track, so there&apos;s nothing to upgrade to.</p>
+        <p className="muted small">Every leg is already {CABIN_LABELS[lowestCabin(booking.details)].toLowerCase()} or better, the top cabins we track, so there&apos;s nothing to upgrade to.</p>
       </section>
     );
   }
@@ -223,11 +224,19 @@ function UpgradeCard({ booking, upgrades }: { booking: FlightBooking; upgrades: 
 
 function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
   const f = booking.details;
+  const cabins = sliceCabins(f);
+  const brands = f.sliceFareBrands ?? f.slices.map(() => f.fareBrand);
   return (
     <section className="card">
       <h2>Flights</h2>
+      {isMixedCabin(f) && (
+        <p className="muted small">
+          Different cabins each way: the price is checked as separate one-way fares in each cabin, added together. That&apos;s close to what
+          the airline charges but an estimate, so confirm on the airline&apos;s site before rebooking.
+        </p>
+      )}
       <table className="segments">
-        <thead><tr><th>Flight</th><th>From</th><th>To</th><th>Departs (local)</th><th>Arrives (local)</th></tr></thead>
+        <thead><tr><th>Flight</th><th>From</th><th>To</th><th>Departs (local)</th><th>Arrives (local)</th><th>Cabin / fare</th></tr></thead>
         <tbody>
           {f.slices.flatMap((slice, i) =>
             slice.map((s, j) => (
@@ -237,6 +246,10 @@ function FlightDetailsCard({ booking }: { booking: FlightBooking }) {
                 <td>{s.destination}</td>
                 <td>{formatLocal(s.departureLocal)}</td>
                 <td>{s.arrivalLocal ? formatLocal(s.arrivalLocal) : "—"}</td>
+                <td>
+                  {CABIN_LABELS[cabins[i]]}
+                  {brands[i] && <span className="muted small"> · {brands[i]}</span>}
+                </td>
               </tr>
             )),
           )}
