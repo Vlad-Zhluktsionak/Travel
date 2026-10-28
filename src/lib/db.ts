@@ -93,11 +93,35 @@ async function open(): Promise<Client> {
   return createClient({ url, authToken });
 }
 
+/**
+ * Columns added after the first deployment. SQLite has no "ADD COLUMN IF NOT EXISTS", so check the
+ * table's columns first; this keeps existing databases (e.g. on Turso) working without data loss.
+ */
+const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  // Which cabin a price check / alert is for: NULL = the cabin that was booked; otherwise an upgrade cabin.
+  ["price_checks", "cabin", "TEXT"],
+  ["alerts", "cabin", "TEXT"],
+];
+
+export async function migrate(c: Client) {
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    const columns = (await c.execute(`PRAGMA table_info(${table})`)).rows.map((r) => String(r.name));
+    if (columns.includes(column)) continue;
+    try {
+      await c.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    } catch (err) {
+      // Another server instance may have added it at the same moment.
+      if (!/duplicate column/i.test(String(err))) throw err;
+    }
+  }
+}
+
 async function getClient(): Promise<Client> {
   ready ??= (async () => {
     const c = await open();
     await c.execute("PRAGMA foreign_keys = ON");
     await c.batch(SCHEMA, "write");
+    await migrate(c);
     client = c;
     return c;
   })();

@@ -4,19 +4,26 @@ import { formatDate, formatLocal, formatMoney } from "./format";
 import { escapeHtml, sendEmail, type Mailer } from "./notify";
 import { getProviders, type Providers } from "./pricing";
 import { nightsBetween } from "./pricing/serpapi-hotels";
-import type { PriceQuote } from "./pricing/provider";
+import type { FlightPriceProvider, PriceQuote } from "./pricing/provider";
 import * as repo from "./repo";
-import type { Booking } from "./types";
+import type { Booking, Cabin, FlightBooking, UpgradeCabin } from "./types";
 
 /** After an alert, only alert again if the price drops at least this much further. */
 const REALERT_STEP_CENTS = 500;
 
+export interface UpgradeOutcome {
+  cabin: UpgradeCabin;
+  priceCents: number | null;
+  alerted: boolean;
+  error?: string;
+}
+
 export type CheckOutcome =
   | { status: "departed" }
   | { status: "skipped" }
-  | { status: "error"; error: string }
-  | { status: "unavailable"; note?: string }
-  | { status: "checked"; priceCents: number; currency: string; alerted: boolean };
+  | { status: "error"; error: string; upgrades?: UpgradeOutcome[] }
+  | { status: "unavailable"; note?: string; upgrades?: UpgradeOutcome[] }
+  | { status: "checked"; priceCents: number; currency: string; alerted: boolean; upgrades?: UpgradeOutcome[] };
 
 export interface MonitorDeps {
   providers?: Partial<Providers>;
@@ -41,6 +48,16 @@ export async function checkBooking(booking: Booking, deps: MonitorDeps = {}): Pr
   }
 
   const providers: Providers = { ...getProviders(), ...deps.providers };
+  const outcome: CheckOutcome = await checkBookedCabin(booking, providers, mailer);
+
+  // Upgrade watching is an add-on: it never changes or blocks the main price check's result.
+  if (booking.kind === "flight" && booking.details.upgradeWatch?.enabled && outcome.status !== "departed" && outcome.status !== "skipped") {
+    outcome.upgrades = await checkUpgrades(booking, providers.flight, mailer);
+  }
+  return outcome;
+}
+
+async function checkBookedCabin(booking: Booking, providers: Providers, mailer: Mailer): Promise<CheckOutcome> {
   const ctx = { bookingKey: `${booking.id}:${booking.confirmationCode}`, paidCents: booking.paidCents, currency: booking.currency };
   const providerName = booking.kind === "flight" ? providers.flight.name : providers.hotel.name;
 
@@ -64,7 +81,7 @@ export async function checkBooking(booking: Booking, deps: MonitorDeps = {}): Pr
   await repo.recordPriceCheck(booking.id, providerName, quote.priceCents, quote.currency, quote.note ?? null);
   if (quote.priceCents === null || !quote.currency) return { status: "unavailable", note: quote.note };
 
-  const outcome: CheckOutcome = { status: "checked", priceCents: quote.priceCents, currency: quote.currency, alerted: false };
+  const outcome = { status: "checked" as const, priceCents: quote.priceCents, currency: quote.currency, alerted: false };
   // We never convert currencies: a quote in a different currency is recorded but can't trigger an alert.
   if (quote.currency !== booking.currency) return outcome;
 
@@ -80,6 +97,111 @@ export async function checkBooking(booking: Booking, deps: MonitorDeps = {}): Pr
   await repo.createAlert(booking.id, booking.paidCents, quote.priceCents, quote.currency);
   await mailer(buildAlertEmail(user.email, booking, quote.priceCents, providerName === "mock"));
   return { ...outcome, alerted: true };
+}
+
+/** The cabins above the one that was booked. */
+export function upgradeCabinsFor(booked: Cabin): UpgradeCabin[] {
+  if (booked === "economy") return ["premium_economy", "business_first"];
+  if (booked === "premium_economy") return ["business_first"];
+  return [];
+}
+
+/** Price one upgrade cabin; "business_first" tries business and falls back to first. */
+async function quoteUpgrade(booking: FlightBooking, cabin: UpgradeCabin, provider: FlightPriceProvider): Promise<PriceQuote> {
+  const attempts: Cabin[] = cabin === "premium_economy" ? ["premium_economy"] : ["business", "first"];
+  let quote: PriceQuote = { priceCents: null, currency: null };
+  for (const c of attempts) {
+    // A higher cabin is never basic economy, so drop the booked fare brand from the comparison.
+    quote = await provider.quote(
+      { ...booking.details, cabin: c, fareBrand: null },
+      { bookingKey: `${booking.id}:${booking.confirmationCode}:${c}`, paidCents: booking.paidCents, currency: booking.currency },
+    );
+    if (quote.priceCents !== null) return { ...quote, note: quote.note ?? CABIN_LABELS[c] };
+  }
+  return { ...quote, note: quote.note ?? "Not offered on these flights" };
+}
+
+async function checkUpgrades(booking: FlightBooking, provider: FlightPriceProvider, mailer: Mailer): Promise<UpgradeOutcome[]> {
+  const watch = booking.details.upgradeWatch!;
+  const results: UpgradeOutcome[] = [];
+  for (const cabin of upgradeCabinsFor(booking.details.cabin)) {
+    let quote: PriceQuote;
+    try {
+      quote = await quoteUpgrade(booking, cabin, provider);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      await repo.recordPriceCheck(booking.id, provider.name, null, null, `Error: ${error.slice(0, 200)}`, cabin);
+      results.push({ cabin, priceCents: null, alerted: false, error });
+      continue;
+    }
+    await repo.recordPriceCheck(booking.id, provider.name, quote.priceCents, quote.currency, quote.note ?? null, cabin);
+    const result: UpgradeOutcome = { cabin, priceCents: quote.priceCents, alerted: false };
+    results.push(result);
+    if (quote.priceCents === null || quote.currency !== booking.currency) continue;
+
+    const extra = quote.priceCents - booking.paidCents;
+    if (extra > watch.maxExtraCents) continue;
+    const alreadyAlerted = await repo.lowestAlertedCents(booking.id, booking.paidCents, cabin);
+    if (alreadyAlerted !== null && quote.priceCents > alreadyAlerted - REALERT_STEP_CENTS) continue;
+
+    const user = await repo.findUserById(booking.userId);
+    if (!user) continue;
+    await repo.createAlert(booking.id, booking.paidCents, quote.priceCents, quote.currency, cabin);
+    await mailer(buildUpgradeEmail(user.email, booking, cabin, quote, provider.name === "mock"));
+    result.alerted = true;
+  }
+  return results;
+}
+
+export const CABIN_LABELS: Record<Cabin, string> = {
+  economy: "Economy",
+  premium_economy: "Premium economy",
+  business: "Business",
+  first: "First",
+};
+
+export const UPGRADE_LABELS: Record<UpgradeCabin, string> = {
+  premium_economy: "Premium economy",
+  business_first: "Business / First",
+};
+
+export function buildUpgradeEmail(to: string, booking: FlightBooking, cabin: UpgradeCabin, quote: PriceQuote, simulated: boolean) {
+  const trip = describeTrip(booking);
+  const found = quote.priceCents!;
+  const extra = found - booking.paidCents;
+  const extraText = extra <= 0 ? `no more than you paid (${formatMoney(-extra, booking.currency)} less)` : `only ${formatMoney(extra, booking.currency)} more than you paid`;
+  const cabinName = quote.note && !/not offered/i.test(quote.note) ? quote.note : UPGRADE_LABELS[cabin];
+  const airline = booking.details.airline ?? booking.details.slices[0][0].carrier;
+  const link = `${config.appUrl}/trips/${booking.id}`;
+  const advice = `Look up your reservation (${booking.confirmationCode}) on ${airline}'s website or app and change it to the same flights in the higher cabin; you'd pay the fare difference. The airline calculates the exact amount, so check it before you pay.`;
+  const facts: [string, string][] = [
+    ["Confirmation", booking.confirmationCode],
+    ["Departs", formatLocal(booking.details.slices[0][0].departureLocal)],
+    ["Passengers", String(booking.details.passengerCount)],
+    ["You paid", `${formatMoney(booking.paidCents, booking.currency)} (${CABIN_LABELS[booking.details.cabin]})`],
+    [`${UPGRADE_LABELS[cabin]} now`, formatMoney(found, booking.currency)],
+    ["Your upgrade limit", `${formatMoney(booking.details.upgradeWatch?.maxExtraCents ?? 0, booking.currency)} extra`],
+  ];
+  const demo = simulated ? "\n\n(Demo mode: this price is simulated, not a real fare.)" : "";
+  const text = `${UPGRADE_LABELS[cabin]} on your ${trip} flights is now ${extraText}.
+
+${facts.map(([k, v]) => `${k}: ${v}`).join("\n")}
+
+How to upgrade: ${advice}
+
+Details: ${link}${demo}`;
+  const html = `<div style="font-family:system-ui,sans-serif;max-width:560px">
+<h2 style="margin:0 0 8px">⬆️ ${escapeHtml(UPGRADE_LABELS[cabin])} for ${escapeHtml(extra <= 0 ? "no extra cost" : `+${formatMoney(extra, booking.currency)}`)}</h2>
+<p style="margin:0 0 16px;color:#555">${escapeHtml(trip)} · ${escapeHtml(cabinName)}</p>
+<table style="border-collapse:collapse;margin-bottom:16px">
+${facts.map(([k, v]) => `<tr><td style="padding:4px 16px 4px 0;color:#555">${escapeHtml(k)}</td><td><b>${escapeHtml(v)}</b></td></tr>`).join("\n")}
+</table>
+<p><b>How to upgrade:</b> ${escapeHtml(advice)}</p>
+<p><a href="${escapeHtml(link)}">View details</a></p>
+${simulated ? '<p style="color:#a15c00">Demo mode: this price is simulated, not a real fare.</p>' : ""}
+</div>`;
+  const subjectExtra = extra <= 0 ? "no extra cost" : `+${formatMoney(extra, booking.currency)}`;
+  return { to, subject: `⬆️ Upgrade: ${UPGRADE_LABELS[cabin]} for ${subjectExtra} on ${trip}`, text, html };
 }
 
 /** Short human description, e.g. "SFO → BOS (round trip)" or "Hyatt Regency Chicago, Mar 3–6". */

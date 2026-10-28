@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { Row } from "@libsql/client";
 import { all, get, run } from "./db";
 import { config } from "./config";
-import type { Alert, Booking, ParsedBooking, PriceCheck, User } from "./types";
+import type { Alert, Booking, ParsedBooking, PriceCheck, UpgradeCabin, User } from "./types";
 
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
@@ -188,10 +188,13 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
     code,
   ]);
   const details = { ...parsed.details };
-  if (existing && parsed.kind === "hotel") {
-    // Keep the cached Google Hotels id so we don't spend an API search finding the hotel again.
-    const previous = JSON.parse(String(existing.details)) as { propertyToken?: string | null };
-    (details as { propertyToken?: string | null }).propertyToken ??= previous.propertyToken ?? null;
+  if (existing) {
+    // Keep state the email doesn't carry: the cached Google Hotels id (saves an API search) and
+    // the user's upgrade-watch settings.
+    const previous = JSON.parse(String(existing.details)) as { propertyToken?: string | null; upgradeWatch?: unknown };
+    const merged = details as { propertyToken?: string | null; upgradeWatch?: unknown };
+    if (parsed.kind === "hotel") merged.propertyToken ??= previous.propertyToken ?? null;
+    if (parsed.kind === "flight" && previous.upgradeWatch) merged.upgradeWatch ??= previous.upgradeWatch;
   }
   const values = [parsed.paidCents, parsed.currency.toUpperCase(), startsOn(parsed), JSON.stringify(details)];
 
@@ -231,6 +234,9 @@ export async function deleteBooking(id: number, userId: number) {
 }
 
 // ---------- price checks & alerts ----------
+// `cabin` NULL = the cabin that was booked; otherwise an upgrade cabin being watched.
+
+const asCabin = (v: unknown) => (v === null || v === undefined ? null : (String(v) as UpgradeCabin));
 
 function toCheck(row: Row): PriceCheck {
   return {
@@ -241,6 +247,7 @@ function toCheck(row: Row): PriceCheck {
     priceCents: row.price_cents === null ? null : Number(row.price_cents),
     currency: str(row.currency),
     note: str(row.note),
+    cabin: asCabin(row.cabin),
   };
 }
 
@@ -250,21 +257,20 @@ export async function recordPriceCheck(
   priceCents: number | null,
   currency: string | null,
   note: string | null,
+  cabin: UpgradeCabin | null = null,
 ): Promise<PriceCheck> {
-  const result = await run("INSERT INTO price_checks (booking_id, provider, price_cents, currency, note) VALUES (?, ?, ?, ?, ?)", [
-    bookingId,
-    provider,
-    priceCents,
-    currency,
-    note,
-  ]);
-  await run("UPDATE bookings SET last_checked_at = datetime('now') WHERE id = ?", [bookingId]);
+  const result = await run(
+    "INSERT INTO price_checks (booking_id, provider, price_cents, currency, note, cabin) VALUES (?, ?, ?, ?, ?, ?)",
+    [bookingId, provider, priceCents, currency, note, cabin],
+  );
+  if (cabin === null) await run("UPDATE bookings SET last_checked_at = datetime('now') WHERE id = ?", [bookingId]);
   return toCheck((await get("SELECT * FROM price_checks WHERE id = ?", [result.lastInsertRowid]))!);
 }
 
+/** Price history of the booked cabin. */
 export async function listPriceChecks(bookingId: number, limit = 200): Promise<PriceCheck[]> {
   const rows = await all(
-    "SELECT * FROM (SELECT * FROM price_checks WHERE booking_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id",
+    "SELECT * FROM (SELECT * FROM price_checks WHERE booking_id = ? AND cabin IS NULL ORDER BY id DESC LIMIT ?) ORDER BY id",
     [bookingId, limit],
   );
   return rows.map(toCheck);
@@ -272,10 +278,34 @@ export async function listPriceChecks(bookingId: number, limit = 200): Promise<P
 
 export async function latestPriceCheck(bookingId: number): Promise<PriceCheck | null> {
   const row = await get(
-    "SELECT * FROM price_checks WHERE booking_id = ? AND price_cents IS NOT NULL ORDER BY id DESC LIMIT 1",
+    "SELECT * FROM price_checks WHERE booking_id = ? AND cabin IS NULL AND price_cents IS NOT NULL ORDER BY id DESC LIMIT 1",
     [bookingId],
   );
   return row ? toCheck(row) : null;
+}
+
+export interface UpgradeSummary {
+  cabin: UpgradeCabin;
+  /** Most recent check for this cabin (its price may be null = not offered). */
+  latest: PriceCheck;
+  lowestCents: number | null;
+}
+
+/** Latest check and lowest price seen for each watched upgrade cabin. */
+export async function upgradeSummaries(bookingId: number): Promise<UpgradeSummary[]> {
+  const rows = await all(
+    `SELECT p.*, (SELECT MIN(price_cents) FROM price_checks q WHERE q.booking_id = p.booking_id AND q.cabin = p.cabin) AS lowest
+     FROM price_checks p
+     WHERE p.booking_id = ? AND p.cabin IS NOT NULL
+       AND p.id = (SELECT MAX(id) FROM price_checks r WHERE r.booking_id = p.booking_id AND r.cabin = p.cabin)
+     ORDER BY p.cabin`,
+    [bookingId],
+  );
+  return rows.map((row) => ({
+    cabin: asCabin(row.cabin)!,
+    latest: toCheck(row),
+    lowestCents: row.lowest === null ? null : Number(row.lowest),
+  }));
 }
 
 function toAlert(row: Row): Alert {
@@ -286,16 +316,21 @@ function toAlert(row: Row): Alert {
     paidCents: Number(row.paid_cents),
     foundCents: Number(row.found_cents),
     currency: String(row.currency),
+    cabin: asCabin(row.cabin),
   };
 }
 
-export async function createAlert(bookingId: number, paidCents: number, foundCents: number, currency: string): Promise<Alert> {
-  const result = await run("INSERT INTO alerts (booking_id, paid_cents, found_cents, currency) VALUES (?, ?, ?, ?)", [
-    bookingId,
-    paidCents,
-    foundCents,
-    currency,
-  ]);
+export async function createAlert(
+  bookingId: number,
+  paidCents: number,
+  foundCents: number,
+  currency: string,
+  cabin: UpgradeCabin | null = null,
+): Promise<Alert> {
+  const result = await run(
+    "INSERT INTO alerts (booking_id, paid_cents, found_cents, currency, cabin) VALUES (?, ?, ?, ?, ?)",
+    [bookingId, paidCents, foundCents, currency, cabin],
+  );
   return toAlert((await get("SELECT * FROM alerts WHERE id = ?", [result.lastInsertRowid]))!);
 }
 
@@ -303,8 +338,14 @@ export async function listAlerts(bookingId: number): Promise<Alert[]> {
   return (await all("SELECT * FROM alerts WHERE booking_id = ? ORDER BY id DESC", [bookingId])).map(toAlert);
 }
 
-/** Lowest price we've already alerted on at the current paid price, so we only re-alert on a further drop. */
-export async function lowestAlertedCents(bookingId: number, paidCents: number): Promise<number | null> {
-  const row = await get("SELECT MIN(found_cents) AS m FROM alerts WHERE booking_id = ? AND paid_cents = ?", [bookingId, paidCents]);
+/**
+ * Lowest price we've already alerted on (for this cabin, at the current paid price), so we only
+ * re-alert on a further drop.
+ */
+export async function lowestAlertedCents(bookingId: number, paidCents: number, cabin: UpgradeCabin | null = null): Promise<number | null> {
+  const row = await get(
+    "SELECT MIN(found_cents) AS m FROM alerts WHERE booking_id = ? AND paid_cents = ? AND cabin IS ?",
+    [bookingId, paidCents, cabin],
+  );
   return row?.m === null || row?.m === undefined ? null : Number(row.m);
 }

@@ -80,6 +80,26 @@ export async function checkNow(form: FormData) {
   revalidatePath("/");
 }
 
+export async function updateUpgradeWatch(form: FormData) {
+  const user = await requireUser();
+  const booking = await repo.getBooking(Number(form.get("bookingId")), user.id);
+  if (!booking || booking.kind !== "flight") return;
+  const dollars = Number(form.get("maxExtra"));
+  const maxExtraCents =
+    Number.isFinite(dollars) && dollars >= 0 && dollars <= 100_000
+      ? Math.round(dollars * 100)
+      : (booking.details.upgradeWatch?.maxExtraCents ?? 20_000);
+  const enabled = form.get("enabled") === "1";
+  const details = { ...booking.details, upgradeWatch: { enabled, maxExtraCents } };
+  await repo.updateBookingDetails(booking.id, details);
+  // Turning it on prices the higher cabins right away instead of waiting for the next scheduled run.
+  if (enabled && !booking.details.upgradeWatch?.enabled && booking.status === "active") {
+    await checkBooking({ ...booking, details }, { force: true });
+  }
+  revalidatePath(`/trips/${booking.id}`);
+  revalidatePath("/");
+}
+
 export async function setTracking(form: FormData) {
   const user = await requireUser();
   const id = Number(form.get("bookingId"));

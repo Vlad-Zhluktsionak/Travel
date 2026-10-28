@@ -4,6 +4,8 @@ import { mailboxProviders } from "@/lib/email/mailbox";
 import { formatDate, formatLocal, formatMoney } from "@/lib/format";
 import { nightsBetween } from "@/lib/pricing/serpapi-hotels";
 import * as repo from "@/lib/repo";
+import type { UpgradeSummary } from "@/lib/repo";
+import { UPGRADE_LABELS } from "@/lib/monitor";
 import { currentUser } from "@/lib/session";
 import type { Booking, PriceCheck, User } from "@/lib/types";
 import { disconnectMailbox, syncMailbox, updateThreshold } from "./actions";
@@ -49,6 +51,13 @@ function Landing({ error }: { error?: string }) {
 async function Dashboard({ user, error, connected }: { user: User; error?: string; connected?: string }) {
   const bookings = await repo.listBookings(user.id);
   const latest = new Map(await Promise.all(bookings.map(async (b) => [b.id, await repo.latestPriceCheck(b.id)] as const)));
+  const upgrades = new Map(
+    await Promise.all(
+      bookings
+        .filter((b) => b.kind === "flight" && b.details.upgradeWatch?.enabled)
+        .map(async (b) => [b.id, await repo.upgradeSummaries(b.id)] as const),
+    ),
+  );
   const upcoming = bookings.filter((b) => b.status !== "departed");
   const past = bookings.filter((b) => b.status === "departed").reverse();
   const connections = await repo.listConnections(user.id);
@@ -70,7 +79,7 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
         {upcoming.length === 0 ? (
           <p className="muted">No trips yet. New confirmations in Gmail are imported automatically once the script is set up — or paste one below.</p>
         ) : (
-          <div className="stack">{upcoming.map((b) => <TripRow key={b.id} booking={b} latest={latest.get(b.id) ?? null} />)}</div>
+          <div className="stack">{upcoming.map((b) => <TripRow key={b.id} booking={b} latest={latest.get(b.id) ?? null} upgrades={upgrades.get(b.id) ?? []} />)}</div>
         )}
       </section>
 
@@ -125,14 +134,21 @@ async function Dashboard({ user, error, connected }: { user: User; error?: strin
       {past.length > 0 && (
         <section className="card">
           <h2 className="muted">Past trips</h2>
-          <div className="stack">{past.map((b) => <TripRow key={b.id} booking={b} latest={latest.get(b.id) ?? null} />)}</div>
+          <div className="stack">{past.map((b) => <TripRow key={b.id} booking={b} latest={latest.get(b.id) ?? null} upgrades={upgrades.get(b.id) ?? []} />)}</div>
         </section>
       )}
     </>
   );
 }
 
-function TripRow({ booking, latest }: { booking: Booking; latest: PriceCheck | null }) {
+function TripRow({ booking, latest, upgrades }: { booking: Booking; latest: PriceCheck | null; upgrades: UpgradeSummary[] }) {
+  // Cheapest watched upgrade that's within the trip's limit, if any.
+  const limit = booking.kind === "flight" ? booking.details.upgradeWatch?.maxExtraCents : undefined;
+  const deal = limit === undefined
+    ? undefined
+    : upgrades
+        .filter((u) => u.latest.priceCents !== null && u.latest.currency === booking.currency && u.latest.priceCents - booking.paidCents <= limit)
+        .sort((a, b) => a.latest.priceCents! - b.latest.priceCents!)[0];
   const comparable = latest && latest.currency === booking.currency ? latest.priceCents! : null;
   const savings = comparable !== null ? booking.paidCents - comparable : null;
   const nonRefundable = booking.kind === "hotel" && booking.details.refundable === false;
@@ -175,6 +191,11 @@ function TripRow({ booking, latest }: { booking: Booking; latest: PriceCheck | n
           ) : (
             <span className="badge">No drop yet</span>
           ))}
+        {deal && booking.status === "active" && (
+          <span className="badge good" style={{ marginLeft: 4 }}>
+            ⬆️ {UPGRADE_LABELS[deal.cabin]} {deal.latest.priceCents! <= booking.paidCents ? "at no extra cost" : `+${formatMoney(deal.latest.priceCents! - booking.paidCents, booking.currency)}`}
+          </span>
+        )}
       </div>
     </Link>
   );

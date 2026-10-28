@@ -32,6 +32,8 @@ Get money back when your flight or hotel gets cheaper. FareWatch:
 
 **Alert rules:** you get an alert when `paid − current ≥ your threshold` (default $20). After an alert, you only get another one if the price falls at least $5 further. Prices in a different currency are recorded but never compared. Tracking stops on the departure or check-in date. Scheduled checks re-price flights about every 6 hours and hotels about every 12 hours (minimum gaps set by `FLIGHT_CHECK_INTERVAL_HOURS`, default 5, and `HOTEL_CHECK_INTERVAL_HOURS`, default 11, just under the 6-hour schedule to absorb its jitter). The "Check price now" button ignores that limit.
 
+**Upgrade watching (flights, opt-in per trip):** turn on "Watch upgrades" on a flight's page and set a limit. Each check then also prices the same flights in premium economy and business/first (business, falling back to first), and emails you when a higher cabin costs at most your limit more than you paid. Upgrade prices and alerts are stored with a `cabin` value and never mix with the booked cabin's price history. This uses up to 3 extra Duffel searches per check.
+
 ## Run it locally
 
 Requires Node.js 22+.

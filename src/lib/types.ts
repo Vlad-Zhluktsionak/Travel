@@ -25,7 +25,18 @@ export interface FlightDetails extends Itinerary {
   airline: string | null;
   bookingSite: string | null;
   passengerNames: string[];
+  /** Per-trip opt-in to also price the same flights in higher cabins. */
+  upgradeWatch?: UpgradeWatch | null;
 }
+
+export interface UpgradeWatch {
+  enabled: boolean;
+  /** Email when an upgrade cabin costs at most this much more than what was paid (all passengers). */
+  maxExtraCents: number;
+}
+
+/** Higher cabins we can watch. "business_first" = business, falling back to first. */
+export type UpgradeCabin = "premium_economy" | "business_first";
 
 export type HotelChain = "marriott" | "hilton" | "hyatt" | "ihg" | "other";
 
@@ -82,6 +93,8 @@ export interface PriceCheck {
   priceCents: number | null;
   currency: string | null;
   note: string | null;
+  /** null = the booked cabin; otherwise the upgrade cabin this check priced. */
+  cabin: UpgradeCabin | null;
 }
 
 export interface Alert {
@@ -91,6 +104,8 @@ export interface Alert {
   paidCents: number;
   foundCents: number;
   currency: string;
+  /** null = a price drop on the booked cabin; otherwise an upgrade alert for this cabin. */
+  cabin: UpgradeCabin | null;
 }
 
 export interface User {
