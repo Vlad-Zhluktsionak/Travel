@@ -4,7 +4,7 @@ import type { Segment } from "../types";
 import { DuffelPriceProvider, type PremiumLegPricer } from "./duffel";
 import { MockPriceProvider } from "./mock";
 import type { FlightPriceProvider, HotelPriceProvider } from "./provider";
-import { GOOGLE_TRAVEL_CLASS, GoogleFlightsLegPricer, type LegPrice } from "./serpapi-flights";
+import { GoogleFlightsLegPricer, type LegPrice } from "./serpapi-flights";
 import { SerpApiHotelProvider } from "./serpapi-hotels";
 
 export type { FlightPriceProvider, HotelPriceProvider, HotelQuote, PriceQuote } from "./provider";
@@ -20,7 +20,7 @@ export interface Providers {
  */
 export function cachedGooglePremium(pricer: GoogleFlightsLegPricer, maxAgeHours: number): PremiumLegPricer {
   return async (slice: Segment[], passengers: number, currency: string): Promise<LegPrice> => {
-    const key = `google-premium-v2|${slice.map((s) => `${s.carrier}${s.flightNumber}@${s.departureLocal.slice(0, 10)}`).join(">")}|${passengers}|${currency}`;
+    const key = `google-premium-v3|${slice.map((s) => `${s.carrier}${s.flightNumber}@${s.departureLocal.slice(0, 10)}`).join(">")}|${passengers}|${currency}`;
     const saved = await repo.getExternalQuote(key, maxAgeHours);
     if (saved) {
       return saved.priceCents !== null && saved.currency
@@ -29,7 +29,7 @@ export function cachedGooglePremium(pricer: GoogleFlightsLegPricer, maxAgeHours:
     }
     let result: LegPrice;
     try {
-      result = await pricer.price(slice, passengers, currency, GOOGLE_TRAVEL_CLASS.premium_economy);
+      result = await pricer.premium(slice, passengers, currency);
     } catch (err) {
       // Network trouble: report it, but don't save it, so the next check tries again.
       return { problem: `Google Flights lookup failed: ${err instanceof Error ? err.message : String(err)}` };

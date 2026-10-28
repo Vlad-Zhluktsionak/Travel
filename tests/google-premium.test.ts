@@ -49,12 +49,33 @@ function duffelFetch(calls: string[]) {
 
 const googleListing: GoogleFlightsResponse = {
   best_flights: [
-    { price: 1120, flights: [{ flight_number: "AS 1360", departure_airport: { id: "SEA" }, arrival_airport: { id: "PVR" }, travel_class: "Premium economy" }] },
+    { price: 1120, booking_token: "tok1360", flights: [{ flight_number: "AS 1360", departure_airport: { id: "SEA" }, arrival_airport: { id: "PVR" }, travel_class: "Economy" }] },
   ],
   other_flights: [
-    { price: 990, flights: [{ flight_number: "AS 1362", departure_airport: { id: "SEA" }, arrival_airport: { id: "PVR" }, travel_class: "Premium economy" }] },
+    { price: 990, booking_token: "tok1362", flights: [{ flight_number: "AS 1362", departure_airport: { id: "SEA" }, arrival_airport: { id: "PVR" }, travel_class: "Economy" }] },
   ],
 };
+
+/** Alaska's fare options on the flight's Google booking page. */
+const fareOptions: GoogleFlightsResponse = {
+  booking_options: [
+    { together: { book_with: "Alaska", option_title: "Saver", price: 1491 } },
+    { together: { book_with: "Alaska", option_title: "Main", price: 1691 } },
+    { together: { book_with: "Alaska", option_title: "Premium", price: 2051 } },
+    { together: { book_with: "Expedia", option_title: "Premium", price: 2099 } },
+    { together: { book_with: "Alaska", option_title: "First", price: 2899 } },
+  ],
+};
+
+/** SerpApi stand-in: the economy search, then the fare options for the booking token. */
+function googleFetch(calls: string[], options: GoogleFlightsResponse = fareOptions) {
+  return (async (u: string) => {
+    const q = new URL(u).searchParams;
+    const token = q.get("booking_token");
+    calls.push(token ? `google options ${token}` : `google search class ${q.get("travel_class")}`);
+    return new Response(JSON.stringify(token ? options : googleListing), { status: 200 });
+  }) as unknown as typeof fetch;
+}
 
 describe("Alaska fares", () => {
   it("treats Alaska 'Saver' as basic economy, so Main means the real Main fare", () => {
@@ -85,27 +106,50 @@ describe("Google Flights lookup", () => {
 
   it("says what Google listed when nothing matches", async () => {
     const listing: GoogleFlightsResponse = {
-      best_flights: [{ price: 1180, flights: [{ flight_number: "AS 1362", departure_airport: { id: "SEA", time: "2031-01-15 16:40" }, arrival_airport: { id: "PVR" }, travel_class: "Premium economy" }] }],
+      best_flights: [{ price: 698, flights: [{ flight_number: "DL 1921", departure_airport: { id: "SEA", time: "2031-01-15 09:42" }, arrival_airport: { id: "PVR" }, travel_class: "Premium Economy" }] }],
     };
     const fetchImpl = (async () => new Response(JSON.stringify(listing), { status: 200 })) as unknown as typeof fetch;
-    const result = await new GoogleFlightsLegPricer("key", fetchImpl).price([seg("SEA", "PVR", "2031-01-15", "1360")], 2, "USD", 2);
+    const result = await new GoogleFlightsLegPricer("key", fetchImpl).premium([seg("SEA", "PVR", "2031-01-15", "1360")], 2, "USD");
     expect(result).toEqual({
-      problem: "Google Flights didn't match your flight (AS 1360 2031-01-15 10:13). It listed: AS 1362 SEA→PVR 2031-01-15 16:40 (Premium economy) $1,180.00.",
+      problem: "Google Flights didn't list your flight (AS 1360 2031-01-15 10:13) in economy. It listed: DL 1921 SEA→PVR 2031-01-15 09:42 (Premium Economy) $698.00.",
     });
   });
 
-  it("asks Google for a one-way premium economy fare for all passengers", async () => {
-    let url: URL | undefined;
+  it("finds Alaska Premium Class among the flight's fare options (economy search + fare options)", async () => {
+    const calls: string[] = [];
+    const urls: URL[] = [];
+    const inner = googleFetch(calls);
     const fetchImpl = (async (u: string) => {
-      url = new URL(u);
-      return new Response(JSON.stringify(googleListing), { status: 200 });
+      urls.push(new URL(u));
+      return inner(u);
     }) as unknown as typeof fetch;
-    const result = await new GoogleFlightsLegPricer("key", fetchImpl).price([seg("SEA", "PVR", "2031-01-15", "1360")], 2, "USD", 2);
-    expect(result).toEqual({ cents: 112_000, currency: "USD", note: "Google Flights Premium economy" });
-    expect(Object.fromEntries(url!.searchParams)).toMatchObject({
+    const result = await new GoogleFlightsLegPricer("key", fetchImpl).premium([seg("SEA", "PVR", "2031-01-15", "1360")], 2, "USD");
+    expect(result).toEqual({ cents: 205_100, currency: "USD", note: "Google Flights: Premium via Alaska" });
+    expect(calls).toEqual(["google search class 1", "google options tok1360"]); // Alaska: no premium-economy-class search
+    expect(Object.fromEntries(urls[0].searchParams)).toMatchObject({
       engine: "google_flights", type: "2", departure_id: "SEA", arrival_id: "PVR", outbound_date: "2031-01-15",
-      travel_class: "2", adults: "2", currency: "USD",
+      travel_class: "1", adults: "2", currency: "USD",
     });
+  });
+
+  it("lists the fare options it saw when none is Premium", async () => {
+    const options: GoogleFlightsResponse = { booking_options: [{ together: { book_with: "Alaska", option_title: "Main", price: 1691 } }] };
+    const result = await new GoogleFlightsLegPricer("key", googleFetch([], options)).premium([seg("SEA", "PVR", "2031-01-15", "1360")], 2, "USD");
+    expect(result).toEqual({ problem: "Google Flights found your flight, but no Premium fare option. Options shown: Main via Alaska $1,691.00." });
+  });
+
+  it("tries Google's premium economy class first for airlines with a separate premium economy cabin", async () => {
+    const calls: string[] = [];
+    const delta = [{ ...seg("SEA", "PVR", "2031-01-15", "1360"), carrier: "DL" }];
+    const listing: GoogleFlightsResponse = {
+      best_flights: [{ price: 698, flights: [{ flight_number: "DL 1360", departure_airport: { id: "SEA" }, arrival_airport: { id: "PVR" }, travel_class: "Premium Economy" }] }],
+    };
+    const fetchImpl = (async (u: string) => {
+      calls.push(`class ${new URL(u).searchParams.get("travel_class")}`);
+      return new Response(JSON.stringify(listing), { status: 200 });
+    }) as unknown as typeof fetch;
+    expect(await new GoogleFlightsLegPricer("key", fetchImpl).premium(delta, 2, "USD")).toEqual({ cents: 69_800, currency: "USD", note: "Google Flights Premium Economy" });
+    expect(calls).toEqual(["class 2"]);
   });
 });
 
@@ -114,25 +158,23 @@ describe("pricing the user's Alaska trip", () => {
 
   it("uses Google Flights for the Premium leg Duffel can't price, and Duffel for First back", async () => {
     const calls: string[] = [];
-    const googleFetch = (async () => {
-      calls.push("google SEA premium");
-      return new Response(JSON.stringify(googleListing), { status: 200 });
-    }) as unknown as typeof fetch;
-    const fallback = cachedGooglePremium(new GoogleFlightsLegPricer("key", googleFetch), 24);
+    const fallback = cachedGooglePremium(new GoogleFlightsLegPricer("key", googleFetch(calls)), 24);
     const duffel = new DuffelPriceProvider("tok", duffelFetch(calls), fallback);
     const ctx = () => ({ bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
 
     const quote = await duffel.quote(pvr, ctx());
     expect(quote).toEqual({
-      priceCents: 112_000 + 140_000,
+      priceCents: 205_100 + 140_000,
       currency: "USD",
-      note: "Premium out (Google Flights Premium economy) · First back — 2 one-way fares added together",
+      note: "Premium out (Google Flights: Premium via Alaska) · First back — 2 one-way fares added together",
     });
-    expect(calls).toEqual(["duffel SEA economy", "duffel SEA premium_economy", "google SEA premium", "duffel PVR first"]);
+    expect(calls).toEqual([
+      "duffel SEA economy", "duffel SEA premium_economy", "google search class 1", "google options tok1360", "duffel PVR first",
+    ]);
 
     // The next check within 24 hours reuses the saved Google price instead of spending another search.
     await duffel.quote(pvr, ctx());
-    expect(calls.filter((c) => c.startsWith("google"))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith("google"))).toHaveLength(2); // still just the first lookup's 2 searches
   });
 
   it("explains when Google doesn't list the flight either, without retrying every check", async () => {
@@ -144,7 +186,7 @@ describe("pricing the user's Alaska trip", () => {
     const duffel = new DuffelPriceProvider("tok", duffelFetch([]), cachedGooglePremium(new GoogleFlightsLegPricer("key", googleFetch), 24));
     const q1 = await duffel.quote(pvr, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
     expect(q1.priceCents).toBeNull();
-    expect(q1.note).toContain("Google Flights: Google Flights listed no flights in this class for that day.");
+    expect(q1.note).toContain("Google Flights: Google Flights listed no flights in economy for that day.");
     const q2 = await duffel.quote(pvr, { bookingKey: "x", paidCents: 0, currency: "USD", searchCache: new Map() });
     expect(q2.note).toContain("saved lookup");
     expect(googleCalls).toBe(1);
