@@ -32,6 +32,10 @@ describe("fare levels and options", () => {
     expect(levelOf("economy", "Comfort+")).toBe("extra"); // Delta
     expect(levelOf("economy", "Economy Plus")).toBe("extra"); // United
     expect(levelOf("premium_economy", null)).toBe("extra");
+    expect(levelOf("economy", "EvenMore", "B6")).toBe("extra"); // JetBlue
+    expect(levelOf("economy", "Extra Legroom", "WN")).toBe("extra"); // Southwest
+    expect(levelOf("economy", "Delta Comfort", "DL")).toBe("extra");
+    expect(levelOf("economy", "Economy", "UA")).toBe("main"); // not "Economy Plus"
     expect(levelOf("business", null)).toBe("top");
     expect(levelOf("first", "First Class")).toBe("top");
   });

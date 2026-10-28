@@ -81,7 +81,7 @@ export function describeOffered(sameFlightOffers: DuffelOffer[]): string {
 export function offerMatchesItinerary(offer: DuffelOffer, it: Itinerary): boolean {
   if (!sameFlights(offer, it)) return false;
   const targets = targetsOf(it);
-  return offer.slices.every((s, i) => sliceSatisfies(targets[i], sliceCabinList(s), s.fare_brand_name));
+  return offer.slices.every((s, i) => sliceSatisfies(targets[i], sliceCabinList(s), s.fare_brand_name, s.segments[0]?.marketing_carrier.iata_code));
 }
 
 /**

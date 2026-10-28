@@ -47,14 +47,21 @@ describe("like-for-like offers", () => {
     offer(amount, [offerSlice("SEA", "PVR", "2031-01-15", "1360", cabin, brand)]);
   const oneWayOut: Itinerary = { ...pvr, slices: [pvr.slices[0]], cabin: "premium_economy", sliceCabins: ["premium_economy"], sliceFareBrands: ["Premium Class"] };
 
-  it("never compares Premium Class with a cheaper Main/Saver seat or a lower cabin", () => {
+  it("never compares Premium Class with a cheaper Main/Saver seat or a higher cabin", () => {
     const offers = [
       outbound("300.00", "economy", "Saver"),
       outbound("350.00", "economy", "Main"),
-      outbound("380.00", "premium_economy", "Main"), // right cabin label, wrong fare product
+      outbound("900.00", "first", "First"),
       outbound("520.00", "premium_economy", "Premium"),
     ];
     expect(cheapestMatchingOffer(offers, oneWayOut)?.total_amount).toBe("520.00");
+  });
+
+  it("accepts the airline's own name for the same premium fare (email 'Premium Class', Duffel 'Premium Economy')", () => {
+    const offers = [outbound("350.00", "economy", "Main"), outbound("498.00", "premium_economy", "Premium Economy")];
+    expect(cheapestMatchingOffer(offers, oneWayOut)?.total_amount).toBe("498.00");
+    // Also when the airline sells it in the economy cabin under its premium name.
+    expect(cheapestMatchingOffer([outbound("480.00", "economy", "Premium")], oneWayOut)?.total_amount).toBe("480.00");
   });
 
   it("without a fare name, only a fare of the same level counts (not a lower or higher one)", () => {

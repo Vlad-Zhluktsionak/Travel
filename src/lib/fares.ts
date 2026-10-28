@@ -35,9 +35,38 @@ export interface SliceTarget {
   searchCabins: Cabin[];
 }
 
+/**
+ * What airlines call their middle tier (checked 2026). Extra-legroom economy: Alaska "Premium Class"
+ * (also replaced Hawaiian "Extra Comfort"), American "Main Cabin Extra", Delta "Comfort+"/"Delta Comfort",
+ * United "Economy Plus", JetBlue "EvenMore" (formerly "Even More Space"), Southwest "Extra Legroom".
+ * Separate premium economy cabins: "Premium Economy", Delta "Premium Select", United "Premium Plus",
+ * British Airways "World Traveller Plus", Virgin Atlantic "Premium".
+ */
+export const PREMIUM_NAMES_BY_AIRLINE: Record<string, string[]> = {
+  AS: ["Premium Class", "Premium"],
+  HA: ["Extra Comfort", "Premium Class", "Premium"],
+  AA: ["Main Cabin Extra", "Premium Economy"],
+  DL: ["Comfort+", "Comfort Plus", "Delta Comfort", "Premium Select"],
+  UA: ["Economy Plus", "Premium Plus"],
+  B6: ["EvenMore", "Even More Space", "Even More"],
+  WN: ["Extra Legroom"],
+  BA: ["World Traveller Plus"],
+  VS: ["Premium"],
+};
+
 export const EXTRA_LEGROOM_BRAND =
-  /premium(?!\s*economy)|main cabin extra|\bextra\b|comfort|economy\s*plus|\bplus\b|more\s*(leg\s*room|space)|preferred|stretch/i;
+  /premium|main cabin extra|\bextra\b|comfort|economy\s*plus|\bplus\b|even\s*more|more\s*(leg\s*room|space)|preferred|stretch|world traveller plus/i;
+
+/** Is this fare name an airline's middle tier (extra legroom / premium economy)? */
+export function isPremiumName(brand: string | null | undefined, carrier?: string): boolean {
+  if (!brand || BASIC_BRAND_RE.test(brand)) return false;
+  const known = carrier ? PREMIUM_NAMES_BY_AIRLINE[carrier.toUpperCase()] ?? [] : [];
+  // The airline's name must appear in full ("Economy Plus" is premium; plain "Economy" is not).
+  const offered = brandWords(brand);
+  return known.some((n) => [...brandWords(n)].every((w) => offered.has(w))) || EXTRA_LEGROOM_BRAND.test(brand);
+}
 const BASIC_BRAND = /basic/i;
+const BASIC_BRAND_RE = BASIC_BRAND;
 
 const DEFAULT_SEARCH: Record<FareLevel, Cabin[]> = {
   main: ["economy"],
@@ -76,10 +105,10 @@ export function allOptions(sliceCount: number): OptionKey[] {
 }
 
 /** The level a booked slice falls in, from the cabin and fare name in the confirmation. */
-export function levelOf(cabin: Cabin, brand: string | null | undefined): FareLevel {
+export function levelOf(cabin: Cabin, brand: string | null | undefined, carrier?: string): FareLevel {
   if (CABIN_RANK[cabin] >= CABIN_RANK.business) return "top";
   if (cabin === "premium_economy") return "extra";
-  return brand && EXTRA_LEGROOM_BRAND.test(brand) && !BASIC_BRAND.test(brand) ? "extra" : "main";
+  return isPremiumName(brand, carrier) ? "extra" : "main";
 }
 
 function bookedBrands(d: Itinerary): (string | null)[] {
@@ -90,7 +119,7 @@ function bookedBrands(d: Itinerary): (string | null)[] {
 /** The option the AI read from the confirmation email. */
 export function detectedPaidKey(d: Itinerary): OptionKey {
   const brands = bookedBrands(d);
-  return optionKey(sliceCabins(d).map((c, i) => levelOf(c, brands[i])));
+  return optionKey(sliceCabins(d).map((c, i) => levelOf(c, brands[i], d.slices[i][0]?.carrier)));
 }
 
 export interface FareWatchSettings {
@@ -136,19 +165,18 @@ export function targetsFor(d: Itinerary, key: OptionKey, opts: { isPaid: boolean
   const cabins = sliceCabins(d);
   const brands = bookedBrands(d);
   return levels.map((level, i) => {
-    const exact = opts.isPaid && !opts.overridden && levelOf(cabins[i], brands[i]) === level;
+    const exact = opts.isPaid && !opts.overridden && levelOf(cabins[i], brands[i], d.slices[i][0]?.carrier) === level;
     const order = exact ? [cabins[i], ...DEFAULT_SEARCH[level].filter((c) => c !== cabins[i])] : DEFAULT_SEARCH[level];
     return { level, exactBrand: exact ? brands[i] : null, searchCabins: order };
   });
 }
 
-/** Does an offered slice (its cabins and fare name) satisfy a target? */
-export function sliceSatisfies(target: SliceTarget, cabins: Cabin[], brand: string | null | undefined): boolean {
+/**
+ * Does an offered slice (its cabins and fare name) satisfy a target? The level decides: an airline's own
+ * name for the same fare (email "Premium Class", API "Premium Economy") is fine, a different level never is.
+ */
+export function sliceSatisfies(target: SliceTarget, cabins: Cabin[], brand: string | null | undefined, carrier?: string): boolean {
   const atLeast = (c: Cabin) => cabins.every((x) => CABIN_RANK[x] >= CABIN_RANK[c]);
-  if (target.exactBrand && brand) {
-    // Same fare product as booked; still never accept a lower cabin than the level implies.
-    return sameFareBrand(target.exactBrand, brand) && atLeast(target.level === "top" ? "business" : "economy");
-  }
   const isBasic = BASIC_BRAND.test(brand ?? "");
   const bookedBasic = BASIC_BRAND.test(target.exactBrand ?? "");
   switch (target.level) {
@@ -156,9 +184,13 @@ export function sliceSatisfies(target: SliceTarget, cabins: Cabin[], brand: stri
       return atLeast("business");
     case "extra":
       if (cabins.length && cabins.every((c) => c === "premium_economy")) return true;
-      return cabins.every((c) => c === "economy") && !!brand && EXTRA_LEGROOM_BRAND.test(brand) && !isBasic;
+      if (!cabins.every((c) => c === "economy")) return false;
+      return isPremiumName(brand, carrier) || (!!target.exactBrand && !!brand && sameFareBrand(target.exactBrand, brand));
     case "main":
-      return cabins.every((c) => c === "economy") && (bookedBasic || !isBasic) && !EXTRA_LEGROOM_BRAND.test(brand ?? "");
+      if (!cabins.every((c) => c === "economy")) return false;
+      // Basic economy only counts when that's exactly what was booked.
+      if (isBasic) return bookedBasic && !!target.exactBrand && !!brand && sameFareBrand(target.exactBrand, brand);
+      return !isPremiumName(brand, carrier);
   }
 }
 
