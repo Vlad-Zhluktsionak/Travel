@@ -55,18 +55,31 @@ export const PREMIUM_NAMES_BY_AIRLINE: Record<string, string[]> = {
 };
 
 export const EXTRA_LEGROOM_BRAND =
-  /premium|main cabin extra|\bextra\b|comfort|economy\s*plus|\bplus\b|even\s*more|more\s*(leg\s*room|space)|preferred|stretch|world traveller plus/i;
+  /premium|main cabin extra|\bextra\b|comfort|economy\s*plus|\bplus\b|even\s*more|more\s*(leg\s*room|space)|stretch|world traveller plus/i;
 
 /** Is this fare name an airline's middle tier (extra legroom / premium economy)? */
 export function isPremiumName(brand: string | null | undefined, carrier?: string): boolean {
-  if (!brand || BASIC_BRAND_RE.test(brand)) return false;
+  if (!brand || isBasicFare(brand, carrier)) return false;
   const known = carrier ? PREMIUM_NAMES_BY_AIRLINE[carrier.toUpperCase()] ?? [] : [];
   // The airline's name must appear in full ("Economy Plus" is premium; plain "Economy" is not).
   const offered = brandWords(brand);
   return known.some((n) => [...brandWords(n)].every((w) => offered.has(w))) || EXTRA_LEGROOM_BRAND.test(brand);
 }
 const BASIC_BRAND = /basic/i;
-const BASIC_BRAND_RE = BASIC_BRAND;
+
+/**
+ * Basic-economy style fares (no changes, no seat choice) that aren't called "basic": Alaska's "Saver".
+ * Others already say basic: American/United "Basic Economy", Delta "Main Basic", JetBlue "Blue Basic".
+ */
+export const BASIC_NAMES_BY_AIRLINE: Record<string, string[]> = { AS: ["Saver"], HA: ["Saver"] };
+
+/** Is this a basic-economy style fare for this airline? */
+export function isBasicFare(brand: string | null | undefined, carrier?: string): boolean {
+  if (!brand) return false;
+  if (BASIC_BRAND.test(brand)) return true;
+  const known = carrier ? BASIC_NAMES_BY_AIRLINE[carrier.toUpperCase()] ?? [] : [];
+  return known.some((n) => sameFareBrand(n, brand));
+}
 
 const DEFAULT_SEARCH: Record<FareLevel, Cabin[]> = {
   main: ["economy"],
@@ -177,8 +190,8 @@ export function targetsFor(d: Itinerary, key: OptionKey, opts: { isPaid: boolean
  */
 export function sliceSatisfies(target: SliceTarget, cabins: Cabin[], brand: string | null | undefined, carrier?: string): boolean {
   const atLeast = (c: Cabin) => cabins.every((x) => CABIN_RANK[x] >= CABIN_RANK[c]);
-  const isBasic = BASIC_BRAND.test(brand ?? "");
-  const bookedBasic = BASIC_BRAND.test(target.exactBrand ?? "");
+  const isBasic = isBasicFare(brand, carrier);
+  const bookedBasic = isBasicFare(target.exactBrand, carrier);
   switch (target.level) {
     case "top":
       return atLeast("business");
@@ -233,6 +246,8 @@ export function searchPlan(d: Itinerary, settings: FareWatchSettings): { min: nu
       const order = targets[g[0]].searchCabins;
       first.add(`${g.join(",")}|${order[0]}`);
       for (const c of order) all.add(`${g.join(",")}|${c}`);
+      // Premium may need Main + a seat map when no Premium fare is sold (e.g. Alaska Premium Class).
+      if (g.some((i) => targets[i].level === "extra")) all.add(`${g.join(",")}|seatmap`);
     }
   }
   return { min: first.size, max: all.size };

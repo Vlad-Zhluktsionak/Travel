@@ -83,7 +83,7 @@ describe("fare levels and options", () => {
   it("counts searches: options sharing a cabin share a search", () => {
     const s = (options: string[]) => searchPlan(roundTrip.details, { paid: "main+main", paidOverridden: false, options, maxExtraCents: 0 });
     expect(s(["main+main"])).toEqual({ min: 1, max: 1 });
-    expect(s(["main+main", "extra+extra"])).toEqual({ min: 1, max: 2 }); // same economy search; premium-economy cabin only as fallback
+    expect(s(["main+main", "extra+extra"])).toEqual({ min: 1, max: 3 }); // same economy search; fallbacks: premium-economy cabin, seat map
     expect(s(["main+main", "top+top"])).toEqual({ min: 2, max: 3 }); // + business (first as fallback)
     expect(s(["main+main", "main+top"])).toEqual({ min: 3, max: 4 }); // mixed: one-way economy out + one-way business back
   });
@@ -106,7 +106,8 @@ describe("Duffel with fares to watch", () => {
 
   it("prices several options with one shared search per cabin", async () => {
     const requests: string[] = [];
-    const economy = [rt("600.00", ["economy", "Saver"], ["economy", "Saver"]), rt("800.00", ["economy", "Premium"], ["economy", "Premium"])];
+    // Alaska: "Saver" is basic economy, so the Main option uses the real Main fare.
+    const economy = [rt("600.00", ["economy", "Main"], ["economy", "Main"]), rt("800.00", ["economy", "Premium"], ["economy", "Premium"])];
     const fetchImpl = (async (_u: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)).data;
       requests.push(`${body.slices.length}|${body.cabin_class}`);
