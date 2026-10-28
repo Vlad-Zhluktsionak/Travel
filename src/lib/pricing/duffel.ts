@@ -53,6 +53,30 @@ function sameFlights(offer: DuffelOffer, it: Itinerary): boolean {
   });
 }
 
+/**
+ * What the same flights *were* offered as, e.g. "Duffel offered: Saver (economy) $612 · First (first) $1,410",
+ * so a missing fare can be diagnosed (wrong fare name vs. airline not selling through Duffel).
+ */
+export function describeOffered(sameFlightOffers: DuffelOffer[]): string {
+  if (sameFlightOffers.length === 0) {
+    return "Duffel returned no offers for these exact flights (the airline may not sell this route through Duffel).";
+  }
+  const cheapest = new Map<string, { cents: number; currency: string }>();
+  for (const o of sameFlightOffers) {
+    const label = o.slices
+      .map((s) => `${s.fare_brand_name ?? "no fare name"} (${[...new Set(sliceCabinList(s))].join("/") || "cabin?"})`)
+      .join(" + ");
+    const cents = Math.round(Number(o.total_amount) * 100);
+    const prev = cheapest.get(label);
+    if (!prev || cents < prev.cents) cheapest.set(label, { cents, currency: o.total_currency });
+  }
+  const list = [...cheapest.entries()]
+    .sort((a, b) => a[1].cents - b[1].cents)
+    .slice(0, 6)
+    .map(([label, p]) => `${label} ${new Intl.NumberFormat("en-US", { style: "currency", currency: p.currency }).format(p.cents / 100)}`);
+  return `Duffel offered: ${list.join(" · ")}`;
+}
+
 /** True if the offer flies exactly the booked flights and every slice meets its fare target. */
 export function offerMatchesItinerary(offer: DuffelOffer, it: Itinerary): boolean {
   if (!sameFlights(offer, it)) return false;
@@ -126,21 +150,29 @@ export class DuffelPriceProvider implements FlightPriceProvider {
   }
 
   /** Cheapest match for a group of slices, trying the target's search cabins in order. */
-  private async best(it: Itinerary, sliceIdx: number[], targets: SliceTarget[], ctx?: QuoteContext): Promise<DuffelOffer | null> {
+  private async best(
+    it: Itinerary,
+    sliceIdx: number[],
+    targets: SliceTarget[],
+    ctx?: QuoteContext,
+  ): Promise<{ offer: DuffelOffer | null; seen: string }> {
     const sub: Itinerary = { ...it, slices: sliceIdx.map((i) => it.slices[i]), targets: sliceIdx.map((i) => targets[i]) };
+    const sameFlightOffers: DuffelOffer[] = [];
     for (const cabin of targets[sliceIdx[0]].searchCabins) {
-      const offer = cheapestMatchingOffer(await this.offers(it, sliceIdx, cabin, ctx?.searchCache), sub);
-      if (offer) return offer;
+      const offers = await this.offers(it, sliceIdx, cabin, ctx?.searchCache);
+      const offer = cheapestMatchingOffer(offers, sub);
+      if (offer) return { offer, seen: "" };
+      sameFlightOffers.push(...offers.filter((o) => sameFlights(o, sub)));
     }
-    return null;
+    return { offer: null, seen: describeOffered(sameFlightOffers) };
   }
 
   async quote(it: Itinerary, ctx?: QuoteContext): Promise<PriceQuote> {
     const targets = targetsOf(it);
 
     if (sameSearchOrder(targets)) {
-      const offer = await this.best(it, it.slices.map((_, i) => i), targets, ctx);
-      if (!offer) return { priceCents: null, currency: null, note: "Exact flights and fare not currently offered" };
+      const { offer, seen } = await this.best(it, it.slices.map((_, i) => i), targets, ctx);
+      if (!offer) return { priceCents: null, currency: null, note: `Your fare wasn't found for these flights. ${seen}` };
       return {
         priceCents: Math.round(Number(offer.total_amount) * 100),
         currency: offer.total_currency,
@@ -155,10 +187,10 @@ export class DuffelPriceProvider implements FlightPriceProvider {
     let currency: string | null = null;
     const names: string[] = [];
     for (let i = 0; i < it.slices.length; i++) {
-      const offer = await this.best(it, [i], targets, ctx);
+      const { offer, seen } = await this.best(it, [i], targets, ctx);
       if (!offer) {
         const what = targets[i].exactBrand ?? LEVEL_LABELS[targets[i].level] ?? CABIN_LABELS[targets[i].searchCabins[0]];
-        return { priceCents: null, currency: null, note: `${what} not currently offered on leg ${i + 1}` };
+        return { priceCents: null, currency: null, note: `${what} wasn't found on leg ${i + 1}. ${seen}` };
       }
       if (currency && offer.total_currency !== currency) {
         return { priceCents: null, currency: null, note: "One-way prices came back in different currencies" };

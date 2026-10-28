@@ -73,6 +73,12 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
 
       <section className="card">
         <h2>Price history</h2>
+        {lastCheck && lastCheck.priceCents === null && (
+          <div className="notice warn small" style={{ marginBottom: 12 }}>
+            <b>The last check ({formatTimestamp(lastCheck.checkedAt)}) couldn&apos;t get a price for what you paid.</b>
+            <div style={{ marginTop: 4 }}>{lastCheck.note ?? "No details."}</div>
+          </div>
+        )}
         <PriceHistory checks={checks} paidCents={booking.paidCents} currency={booking.currency} />
         <div className="row" style={{ marginTop: 12, justifyContent: "space-between" }}>
           <span className="muted small">
@@ -95,7 +101,7 @@ export default async function TripPage({ params }: { params: Promise<{ id: strin
         </div>
       </section>
 
-      {booking.kind === "flight" && <FareWatchCard booking={booking} options={upgrades} latest={latest} />}
+      {booking.kind === "flight" && <FareWatchCard booking={booking} options={upgrades} lastPaidCheck={lastCheck ?? null} />}
 
       {booking.kind === "hotel" ? <HotelDetailsCard booking={booking} /> : <FlightDetailsCard booking={booking} />}
 
@@ -162,7 +168,7 @@ function HotelDetailsCard({ booking }: { booking: HotelBooking }) {
   );
 }
 
-function FareWatchCard({ booking, options, latest }: { booking: FlightBooking; options: UpgradeSummary[]; latest: PriceCheck | null }) {
+function FareWatchCard({ booking, options, lastPaidCheck }: { booking: FlightBooking; options: UpgradeSummary[]; lastPaidCheck: PriceCheck | null }) {
   const d = booking.details;
   const settings = fareWatchSettings(d);
   const choices = allOptions(d.slices.length);
@@ -173,7 +179,10 @@ function FareWatchCard({ booking, options, latest }: { booking: FlightBooking; o
   const mixed = choices.slice(3);
 
   const priceOf = (key: string) => {
-    if (key === settings.paid) return latest && latest.currency === booking.currency ? { check: latest, cents: latest.priceCents } : null;
+    if (key === settings.paid) {
+      if (!lastPaidCheck) return null;
+      return { check: lastPaidCheck, cents: lastPaidCheck.currency === booking.currency ? lastPaidCheck.priceCents : null };
+    }
     const s = options.find((o) => o.cabin === key);
     return s ? { check: s.latest, cents: s.latest.currency === booking.currency ? s.latest.priceCents : null, lowest: s.lowestCents } : null;
   };

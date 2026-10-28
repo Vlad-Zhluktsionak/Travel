@@ -91,6 +91,14 @@ describe("Duffel pricing for mixed-cabin trips", () => {
       new Response(JSON.stringify({ data: { offers: [offer("300.00", [offerSlice("SEA", "PVR", "2031-01-15", "1360", "economy", "Saver")])] } }), { status: 200 })) as unknown as typeof fetch;
     const quote = await new DuffelPriceProvider("tok", fetchImpl).quote(pvr);
     expect(quote.priceCents).toBeNull();
+    // Says what *was* offered for the same flights, so a missing fare can be diagnosed.
+    expect(quote.note).toBe("Premium Class wasn't found on leg 1. Duffel offered: Saver (economy) $300.00");
+  });
+
+  it("says when the airline returned nothing at all for these flights", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ data: { offers: [] } }), { status: 200 })) as unknown as typeof fetch;
+    const quote = await new DuffelPriceProvider("tok", fetchImpl).quote(pvr);
+    expect(quote.note).toContain("Duffel returned no offers for these exact flights");
   });
 });
 
