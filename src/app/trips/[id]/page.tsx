@@ -235,7 +235,7 @@ function FareWatchCard({ booking, options, lastPaidCheck }: { booking: FlightBoo
           <SubmitButton pending="Saving & checking prices…" done="✓ Saved">Save</SubmitButton>
           <span className="muted small">
             {plan.min === plan.max ? plan.min : `${plan.min}–${plan.max}`} search{plan.max === 1 ? "" : "es"} per check
-            {plan.max > plan.min ? " (the higher number only when a fallback cabin is needed)" : ""}
+            {plan.max > plan.min ? " (the higher number only when a backup search is needed; Google Flights lookups are reused for 24 hours)" : ""}
           </span>
         </div>
       </form>

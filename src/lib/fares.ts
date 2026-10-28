@@ -246,8 +246,8 @@ export function searchPlan(d: Itinerary, settings: FareWatchSettings): { min: nu
       const order = targets[g[0]].searchCabins;
       first.add(`${g.join(",")}|${order[0]}`);
       for (const c of order) all.add(`${g.join(",")}|${c}`);
-      // Premium may need Main + a seat map when no Premium fare is sold (e.g. Alaska Premium Class).
-      if (g.some((i) => targets[i].level === "extra")) all.add(`${g.join(",")}|seatmap`);
+      // Premium may need a Google Flights lookup (SerpApi, saved for 24h) when Duffel doesn't sell it.
+      if (g.every((i) => targets[i].level === "extra")) for (const i of g) all.add(`${i}|google`);
     }
   }
   return { min: first.size, max: all.size };

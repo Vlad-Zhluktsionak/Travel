@@ -83,7 +83,8 @@ describe("fare levels and options", () => {
   it("counts searches: options sharing a cabin share a search", () => {
     const s = (options: string[]) => searchPlan(roundTrip.details, { paid: "main+main", paidOverridden: false, options, maxExtraCents: 0 });
     expect(s(["main+main"])).toEqual({ min: 1, max: 1 });
-    expect(s(["main+main", "extra+extra"])).toEqual({ min: 1, max: 3 }); // same economy search; fallbacks: premium-economy cabin, seat map
+    // Same economy search; fallbacks: premium-economy cabin, then Google Flights for each direction (saved 24h).
+    expect(s(["main+main", "extra+extra"])).toEqual({ min: 1, max: 4 });
     expect(s(["main+main", "top+top"])).toEqual({ min: 2, max: 3 }); // + business (first as fallback)
     expect(s(["main+main", "main+top"])).toEqual({ min: 3, max: 4 }); // mixed: one-way economy out + one-way business back
   });

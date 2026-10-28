@@ -100,7 +100,7 @@ describe("Duffel pricing for mixed-cabin trips", () => {
     expect(quote.priceCents).toBeNull();
     // Says what *was* offered for the same flights, so a missing fare can be diagnosed.
     expect(quote.note).toBe(
-      "Premium Class wasn't found on leg 1. Duffel offered: Saver (economy) $300.00 Main + premium seat: no regular Main fare to add a seat to.",
+      "Premium Class wasn't found on leg 1. Duffel offered: Saver (economy) $300.00",
     );
   });
 

@@ -45,6 +45,11 @@ export const config = {
     const hours = Number(raw ?? fallback);
     return Number.isFinite(hours) && hours >= 0 ? hours : fallback;
   },
+  /** How long a Google Flights (SerpApi) lookup is reused before searching again. */
+  get googleFlightsCacheHours() {
+    const hours = Number(process.env.GOOGLE_FLIGHTS_CACHE_HOURS ?? 24);
+    return Number.isFinite(hours) && hours >= 0 ? hours : 24;
+  },
   get inboundDomain() {
     return process.env.INBOUND_DOMAIN || "in.example.com";
   },

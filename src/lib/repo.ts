@@ -231,6 +231,39 @@ export async function upsertBooking(userId: number, parsed: ParsedBooking, sourc
 }
 
 /** Drop a booking's price history and alerts, e.g. after correcting what was paid. */
+// ---------- saved third-party lookups ----------
+
+export interface ExternalQuote {
+  priceCents: number | null;
+  currency: string | null;
+  note: string | null;
+  fetchedAt: string;
+}
+
+/** A saved lookup younger than `maxAgeHours`, if any. */
+export async function getExternalQuote(key: string, maxAgeHours: number): Promise<ExternalQuote | null> {
+  const row = await get(
+    "SELECT * FROM external_quotes WHERE key = ? AND fetched_at >= datetime('now', ?)",
+    [key, `-${Math.max(0, maxAgeHours)} hours`],
+  );
+  if (!row) return null;
+  return {
+    priceCents: row.price_cents === null ? null : Number(row.price_cents),
+    currency: str(row.currency),
+    note: str(row.note),
+    fetchedAt: String(row.fetched_at),
+  };
+}
+
+export async function saveExternalQuote(key: string, priceCents: number | null, currency: string | null, note: string | null) {
+  await run(
+    `INSERT INTO external_quotes (key, price_cents, currency, note, fetched_at) VALUES (?, ?, ?, ?, datetime('now'))
+     ON CONFLICT (key) DO UPDATE SET price_cents = excluded.price_cents, currency = excluded.currency,
+       note = excluded.note, fetched_at = excluded.fetched_at`,
+    [key, priceCents, currency, note],
+  );
+}
+
 export async function resetPriceHistory(id: number) {
   await run("DELETE FROM price_checks WHERE booking_id = ?", [id]);
   await run("DELETE FROM alerts WHERE booking_id = ?", [id]);

@@ -1,6 +1,7 @@
 import { CABIN_LABELS, CABIN_RANK } from "../cabins";
-import { LEVEL_LABELS, isPremiumName, sameSearchOrder, sliceSatisfies, targetsFor, detectedPaidKey, type SliceTarget } from "../fares";
-import type { Cabin, Itinerary } from "../types";
+import { LEVEL_LABELS, sameSearchOrder, sliceSatisfies, targetsFor, detectedPaidKey, type SliceTarget } from "../fares";
+import type { Cabin, Itinerary, Segment } from "../types";
+import type { LegPrice } from "./serpapi-flights";
 import type { FlightPriceProvider, PriceQuote, QuoteContext } from "./provider";
 
 export { sameFareBrand } from "../fares";
@@ -23,84 +24,6 @@ export interface DuffelOffer {
   slices: { fare_brand_name?: string | null; segments: DuffelSegment[] }[];
 }
 
-/** Duffel seat map (https://duffel.com/docs/api/seat-maps): one per segment of an offer. */
-export interface DuffelSeatMap {
-  segment_id: string;
-  cabins: {
-    cabin_class?: string | null;
-    rows: {
-      sections: {
-        elements: {
-          type: string;
-          designator?: string;
-          name?: string | null;
-          disclosures?: string[];
-          available_services?: { passenger_id?: string; total_amount: string; total_currency: string }[];
-        }[];
-      }[];
-    }[];
-  }[];
-}
-
-const EXTRA_LEGROOM_SEAT = /premium|extra\s*leg\s*room|more\s*leg\s*room|extra\s*comfort|comfort|even\s*more|economy\s*plus|main cabin extra/i;
-
-/**
- * Cheapest premium (extra-legroom) seats on each segment for every passenger: how airlines like Alaska
- * sell Premium Class on top of a Main fare. A seat counts as premium when the seat map puts it in a
- * premium economy cabin or labels it (name or disclosures) as premium / extra legroom.
- */
-export function premiumSeatCost(
-  maps: DuffelSeatMap[],
-  segmentIds: string[],
-  passengers: number,
-  carrier?: string,
-): { cents: number; currency: string } | { problem: string } {
-  let total = 0;
-  let currency: string | null = null;
-  for (const segId of segmentIds) {
-    const map = maps.find((m) => m.segment_id === segId);
-    if (!map) return { problem: "The airline didn't provide a seat map for this flight." };
-    const prices: { cents: number; currency: string }[] = [];
-    const labels = new Set<string>();
-    let paidSeats = 0;
-    for (const cabin of map.cabins) {
-      for (const row of cabin.rows) {
-        for (const section of row.sections) {
-          for (const el of section.elements) {
-            if (el.type !== "seat" || !el.available_services?.length) continue;
-            paidSeats++;
-            const label = [el.name, ...(el.disclosures ?? [])].filter(Boolean).join(" ");
-            if (label) labels.add(label);
-            const premium =
-              cabin.cabin_class === "premium_economy" ||
-              isPremiumName(el.name ?? null, carrier) ||
-              EXTRA_LEGROOM_SEAT.test(label);
-            if (!premium) continue;
-            const cheapest = el.available_services.reduce((a, b) => (Number(b.total_amount) < Number(a.total_amount) ? b : a));
-            prices.push({ cents: Math.round(Number(cheapest.total_amount) * 100), currency: cheapest.total_currency });
-          }
-        }
-      }
-    }
-    if (prices.length < passengers) {
-      const seen = labels.size ? ` Seat labels seen: ${[...labels].slice(0, 5).join("; ")}.` : "";
-      return {
-        problem:
-          prices.length === 0
-            ? `No premium / extra-legroom seats found in the seat map (${paidSeats} seats for sale).${seen}`
-            : `Only ${prices.length} premium seat(s) left for ${passengers} passengers.`,
-      };
-    }
-    prices.sort((a, b) => a.cents - b.cents);
-    for (const p of prices.slice(0, passengers)) {
-      if (currency && p.currency !== currency) return { problem: "Seat prices came back in different currencies." };
-      currency = p.currency;
-      total += p.cents;
-    }
-  }
-  return { cents: total, currency: currency ?? "USD" };
-}
-
 const LEVEL_SHORT_NAMES = { main: "Main", extra: "Premium", top: "First/Business" } as const;
 
 /**
@@ -115,6 +38,9 @@ function legLabel(level: SliceTarget["level"], fareName: string | null | undefin
   const how = fareName && fareName.trim().toLowerCase() !== name.toLowerCase() ? fareName : null;
   return { name, how };
 }
+
+/** Prices one direction of a trip in Premium, one way (total for all passengers). */
+export type PremiumLegPricer = (slice: Segment[], passengers: number, currency: string) => Promise<LegPrice>;
 
 /** A Duffel API error, with the short code (e.g. "offer_no_longer_available") and a readable message. */
 export class DuffelError extends Error {
@@ -220,6 +146,8 @@ export class DuffelPriceProvider implements FlightPriceProvider {
   constructor(
     private readonly token: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    /** Prices one direction in Premium when Duffel doesn't sell it (Google Flights via SerpApi). */
+    private readonly premiumFallback?: PremiumLegPricer,
   ) {}
 
   /** One offer request (Duffel takes a single cabin per request). */
@@ -282,84 +210,39 @@ export class DuffelPriceProvider implements FlightPriceProvider {
     }
     let seen = describeOffered(sameFlightOffers);
 
-    // No Premium fare for sale: airlines like Alaska sell Premium Class as a seat on a Main ticket, so
-    // price it as the cheapest Main fare plus the cheapest premium seats (1 seat-map request).
-    if (sliceIdx.some((i) => targets[i].level === "extra")) {
-      const viaSeats = await this.mainPlusPremiumSeats(it, sliceIdx, targets, ctx);
-      if ("offer" in viaSeats) return { offer: viaSeats.offer, seen: "" };
-      seen = `${seen} Main + premium seat: ${viaSeats.problem}`;
+    // No Premium fare sold through Duffel (e.g. Alaska Premium Class, which Alaska sells as a seat on a
+    // Main ticket): look each direction up on Google Flights instead, if configured.
+    if (this.premiumFallback && sliceIdx.every((i) => targets[i].level === "extra")) {
+      const google = await this.premiumViaFallback(it, sliceIdx, ctx);
+      if ("offer" in google) return { offer: google.offer, seen: "" };
+      seen = `${seen} Google Flights: ${google.problem}`;
     }
     return { offer: null, seen };
   }
 
-  /** Seat maps for an offer, fetched at most once per check. */
-  private seatMaps(offerId: string, cache?: Map<string, Promise<unknown>>): Promise<DuffelSeatMap[]> {
-    const key = `duffel-seats|${offerId}`;
-    const hit = cache?.get(key) as Promise<DuffelSeatMap[]> | undefined;
-    if (hit) return hit;
-    const pending = (async () => {
-      const res = await this.fetchImpl(`https://api.duffel.com/air/seat_maps?offer_id=${encodeURIComponent(offerId)}`, {
-        headers: { Authorization: `Bearer ${this.token}`, "Duffel-Version": "v2", Accept: "application/json" },
-      });
-      if (!res.ok) throw await duffelError("Seat map", res);
-      return ((await res.json()) as { data: DuffelSeatMap[] }).data ?? [];
-    })();
-    cache?.set(key, pending);
-    pending.catch(() => cache?.delete(key));
-    return pending;
-  }
-
-  private async mainPlusPremiumSeats(
-    it: Itinerary,
-    sliceIdx: number[],
-    targets: SliceTarget[],
-    ctx?: QuoteContext,
-  ): Promise<{ offer: DuffelOffer } | { problem: string }> {
-    // Same group, but Premium legs priced as a regular (non-basic) Main fare.
-    const mainTargets = sliceIdx.map((i) =>
-      targets[i].level === "extra" ? { level: "main" as const, exactBrand: null, searchCabins: ["economy" as Cabin] } : targets[i],
-    );
-    const sub: Itinerary = { ...it, slices: sliceIdx.map((i) => it.slices[i]), targets: mainTargets };
-    let base = cheapestMatchingOffer(await this.offers(it, sliceIdx, "economy", ctx?.searchCache), sub);
-    if (!base) return { problem: "no regular Main fare to add a seat to." };
-
-    // Offers expire quickly, and a later search can invalidate earlier ones. If the Main offer has
-    // expired, search Main again (fresh, uncached) and ask for its seat map straight away.
-    let maps: DuffelSeatMap[];
-    try {
-      try {
-        maps = await this.seatMaps(base.id, ctx?.searchCache);
-      } catch (err) {
-        if (!(err instanceof DuffelError && (err.status === 422 || err.code === "offer_no_longer_available"))) throw err;
-        base = cheapestMatchingOffer(await this.fetchOffers({ ...it, slices: sliceIdx.map((i) => it.slices[i]) }, "economy"), sub);
-        if (!base) return { problem: "no regular Main fare to add a seat to (after refreshing an expired offer)." };
-        maps = await this.seatMaps(base.id);
-      }
-    } catch (err) {
-      return { problem: err instanceof Error ? err.message : String(err) };
-    }
-    const offer = base;
-    const premiumSegments = sliceIdx.flatMap((i, k) =>
-      targets[i].level === "extra" ? offer.slices[k].segments.map((g) => g.id).filter((id): id is string => !!id) : [],
-    );
-    if (premiumSegments.length === 0) return { problem: "the offer has no segment ids for a seat map." };
-    const carrier = offer.slices[0]?.segments[0]?.marketing_carrier.iata_code;
-    const seats = premiumSeatCost(maps, premiumSegments, it.passengerCount, carrier);
-    if ("problem" in seats) return seats;
-    if (seats.currency !== offer.total_currency) return { problem: "seat prices are in a different currency than the fare." };
-
-    const totalCents = Math.round(Number(offer.total_amount) * 100) + seats.cents;
-    return {
-      offer: {
-        ...offer,
-        total_amount: (totalCents / 100).toFixed(2),
-        slices: offer.slices.map((sl, k) => ({
-          ...sl,
-          fare_brand_name:
-            targets[sliceIdx[k]].level === "extra" ? `${sl.fare_brand_name ?? "Main"} fare + Premium seats` : sl.fare_brand_name,
+  /** Price each direction in the group one way via the fallback and combine them into one offer. */
+  private async premiumViaFallback(it: Itinerary, sliceIdx: number[], ctx?: QuoteContext): Promise<{ offer: DuffelOffer } | { problem: string }> {
+    const currency = ctx?.currency ?? "USD";
+    let total = 0;
+    const slices: DuffelOffer["slices"] = [];
+    for (const i of sliceIdx) {
+      const leg = await this.premiumFallback!(it.slices[i], it.passengerCount, currency);
+      if ("problem" in leg) return leg;
+      if (leg.currency !== currency) return { problem: "Google Flights returned a different currency." };
+      total += leg.cents;
+      slices.push({
+        fare_brand_name: leg.note,
+        segments: it.slices[i].map((g) => ({
+          origin: { iata_code: g.origin },
+          destination: { iata_code: g.destination },
+          departing_at: g.departureLocal,
+          marketing_carrier: { iata_code: g.carrier },
+          marketing_carrier_flight_number: g.flightNumber,
+          passengers: [{ cabin_class: "premium_economy" }],
         })),
-      },
-    };
+      });
+    }
+    return { offer: { id: "google-flights", total_amount: (total / 100).toFixed(2), total_currency: currency, slices } };
   }
 
   async quote(it: Itinerary, ctx?: QuoteContext): Promise<PriceQuote> {

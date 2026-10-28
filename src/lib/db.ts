@@ -66,6 +66,15 @@ const SCHEMA = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_checks_booking ON price_checks(booking_id, checked_at)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_booking ON alerts(booking_id)`,
+  // Saved third-party lookups (e.g. Google Flights via SerpApi) so a free search quota isn't spent on
+  // every check.
+  `CREATE TABLE IF NOT EXISTS external_quotes (
+    key TEXT PRIMARY KEY,
+    price_cents INTEGER,
+    currency TEXT,
+    note TEXT,
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
 ];
 
 let client: Client | undefined;
